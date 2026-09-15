@@ -1,0 +1,17 @@
+# Hardware adapter profile. It retains Gemini2 topic remapping but is deliberately motion-locked.
+visual_search_controller:
+  ros__parameters:
+    backend: piper
+    real_motion_enabled: false
+    observe_pose_calibrated: false
+    execute_prepare: false
+    direct_grasp_after_align: true
+    level_align_enabled: false
+grasp_lift_executor:
+  ros__parameters:
+    simulation_only: false
+    auto_execute: false
+    prepare_on_grasp_ready: true
+    top_down_grasp_enabled: false
+    diagonal_side_grasp_enabled: true
+    grasp_contact_check_enabled: true

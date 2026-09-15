@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="medicine_cup">
+    <static>false</static>
+    <link name="cup_link">
+      <gravity>false</gravity>
+      <inertial>
+        <mass>{cup_mass}</mass>
+        <inertia>
+          <ixx>{inertia_xy}</ixx><iyy>{inertia_xy}</iyy><izz>{inertia_z}</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <collision name="cup_collision">
+        <geometry>
+          <cylinder><radius>{cup_radius}</radius><length>{cup_height}</length></cylinder>
+        </geometry>
+      </collision>
+      <visual name="cup_visual">
+        <geometry>
+          <cylinder><radius>{cup_radius}</radius><length>{cup_height}</length></cylinder>
+        </geometry>
+        <material>
+          <ambient>0.78 0.16 0.12 1</ambient>
+          <diffuse>0.92 0.24 0.18 1</diffuse>
+          <specular>0.25 0.25 0.25 1</specular>
+        </material>
+      </visual>
+    </link>
+    <plugin name="cup_pose_plugin" filename="libcup_pose_plugin.so">
+      <ros>
+        <namespace>/brain_robot_pick_place</namespace>
+      </ros>
+      <topic>cup_target_pose</topic>
+    </plugin>
+  </model>
+</sdf>

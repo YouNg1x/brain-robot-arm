@@ -1,0 +1,2 @@
+#!/bin/bash
+docker run --rm -it --user ros --network host --privileged -v /dev/:/dev -v $PWD/astra:/astra astra_workplace

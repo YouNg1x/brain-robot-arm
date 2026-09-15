@@ -1,0 +1,71 @@
+visual_search_controller:
+  ros__parameters:
+    # The operator places the arm in a verified observation pose manually.
+    backend: piper
+    real_motion_enabled: true
+    observe_pose_calibrated: true
+    execute_prepare: false
+    skip_prepare: true
+    direct_grasp_after_align: true
+    level_align_enabled: false
+    use_sim_time: false
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    horizontal_joint: joint1
+    vertical_joint: joint5
+    horizon_joint_names: [joint4, joint6]
+    horizon_lock_positions: [0.0, 0.0]
+    horizontal_error_sign: 1.0
+    vertical_error_sign: 1.0
+    horizontal_search_min: -0.35
+    horizontal_search_max: 0.35
+    vertical_search_min: -0.25
+    vertical_search_max: 0.25
+    local_horizontal_range: 0.08
+    local_vertical_range: 0.08
+    horizontal_search_speed: 0.025
+    vertical_search_speed: 0.020
+    joint_position_tolerance: 0.01
+    search_timeout_s: 45.0
+    local_search_timeout_s: 4.0
+    target_timeout_s: 0.60
+    joint_state_timeout_s: 0.30
+    target_acquire_frames: 2
+    align_stable_frames: 5
+    target_acquire_error_ratio: 0.20
+    horizontal_kp: 0.00025
+    vertical_kp: 0.00025
+    align_joint_speed_limit: 0.025
+    horizon_lock_kp: 0.25
+    horizon_lock_speed_limit: 0.015
+    horizon_lock_tolerance: 0.03
+    control_rate_hz: 20.0
+    prepare_velocity_scaling: 0.01
+    prepare_acceleration_scaling: 0.01
+    prepare_planning_time_s: 2.0
+    error_topic: /brain_robot_vision/pixel_error
+    target_valid_topic: /brain_robot_vision/target_valid
+    joint_state_topic: /joint_states
+    joint_command_topic: /servo_node/delta_joint_cmds
+    servo_status_topic: /servo_node/status
+    servo_start_service: /servo_node/start_servo
+    servo_stop_service: /servo_node/stop_servo
+    emergency_stop_topic: /brain_robot_control/emergency_stop
+
+grasp_lift_executor:
+  ros__parameters:
+    # Physical grasp execution remains disabled until the camera-to-gripper
+    # calibration and point-to-point controller are verified on the real arm.
+    simulation_only: false
+    auto_execute: false
+    prepare_on_grasp_ready: false
+    top_down_grasp_enabled: false
+    diagonal_side_grasp_enabled: false
+    use_sim_time: false
+    camera_optical_frame: camera_color_optical_frame
+    target_point_topic: /brain_robot_vision/target_point_camera
+    target_size_topic: /brain_robot_vision/target_size
+    adaptive_size_enabled: true
+    min_object_size_m: 0.01
+    max_object_size_m: 0.25
+    target_timeout_s: 0.60
+    emergency_stop_topic: /brain_robot_control/emergency_stop

@@ -1,0 +1,36 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# ROS 2 / colcon generated output
+build/
+install/
+log/
+.colcon/
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local datasets, recordings and runtime state
+*.bag
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Installer and generated binary artifacts
+scripts/Miniconda3-latest-Linux-x86_64.sh
+*.tmp
+*.swp

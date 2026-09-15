@@ -1,0 +1,38 @@
+# Git metadata is kept locally and is never part of the workspace snapshot
+**/.git/
+
+# Python caches and local environments
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# ROS 2 / colcon generated output
+**/build/
+**/install/
+**/log/
+.colcon/
+
+# Local editor and operating-system files
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local runtime state and recordings
+*.bag
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Installer and temporary binary artifacts
+brain_robot_arm/scripts/Miniconda3-latest-Linux-x86_64.sh
+*.tmp
+*.swp

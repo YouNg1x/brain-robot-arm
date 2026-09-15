@@ -1,0 +1,132 @@
+visual_search_controller:
+  ros__parameters:
+    # This profile is allowed to move only the Gazebo robot.
+    backend: simulation
+    real_motion_enabled: false
+    observe_pose_calibrated: true
+    execute_prepare: true
+    use_sim_time: true
+
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    # Simulation-only initial observation pose. Do not copy to the physical arm.
+    observe_joint_positions: [0.0, 0.98, -0.75, 0.0, 0.30, 0.0]
+    horizontal_joint: joint1
+    vertical_joint: joint5
+    horizon_joint_names: [joint4, joint6]
+    horizon_lock_positions: [0.0, 0.0]
+    # After visual acquisition, actively level the reachable side-grasp posture.
+    # J2 rises, J3 approaches zero, and J5 crosses through zero to negative.
+    level_align_enabled: true
+    level_joint2_name: joint2
+    level_joint3_name: joint3
+    level_joint2_target: 1.35
+    # "Decrease J3 angle" means reducing its absolute angle toward zero, but
+    # stop at -0.18 rad to remain outside Servo's 0.10-rad upper-limit margin.
+    level_joint3_target: -0.18
+    # J5 flips here without any visual correction. It reaches a strongly
+    # negative posture before it is permitted to take part in final alignment.
+    level_joint5_target: -1.10
+    level_joint2_speed: 0.08
+    # J3 must return toward its near-zero safety target quickly while J5 flips.
+    level_joint3_speed: 0.30
+    # J5 deliberately runs slightly faster than J3 (0.30 rad/s).
+    level_joint5_speed: 0.36
+    # If the cup is lost during the flip, J5 completes the negative posture
+    # faster while J1 holds and J2/J3 recover the requested posture.
+    level_target_lost_joint5_speed: 0.40
+    # During J5 crossing, use J2/J3 together to keep the cup in view.
+    level_joint2_vertical_sign: 1.0
+    level_joint3_vertical_sign: -1.0
+    level_joint23_vertical_kp: 0.00015
+    # Only after J5 reaches level_joint5_target may it correct image height,
+    # and it always remains strongly negative in this final alignment band.
+    final_j5_negative_min: -1.18
+    final_j5_negative_max: -0.95
+
+    # Change only these signs if the first Gazebo search/centering correction moves away.
+    horizontal_error_sign: -1.0
+    # In the current Gazebo model, positive J5 looks downward.
+    vertical_error_sign: 1.0
+
+    # Wide Gazebo-only J1 scan with 0.02 rad margin from ros2_control limits [-1.0, 1.0].
+    horizontal_search_min: -0.98
+    horizontal_search_max: 0.98
+    # J5 searches down first, holds for a complete J1 sweep, then searches up.
+    vertical_search_min: -0.60
+    vertical_search_max: 0.95
+    local_horizontal_range: 0.08
+    local_vertical_range: 0.12
+    horizontal_search_speed: 0.12
+    vertical_search_speed: 0.15
+    joint_position_tolerance: 0.01
+    search_timeout_s: 75.0
+    local_search_timeout_s: 5.0
+
+    target_timeout_s: 0.60
+    joint_state_timeout_s: 0.50
+    # In simulation, one valid frame stops search and enters image centering.
+    # ALIGN uses J1/J5 until the cup stays within the 20% image-error gate.
+    # LEVEL_ALIGN then holds J1, moves J5 negative, and uses only J2/J3 for
+    # image compensation. Final J5 visual adjustment begins after that flip.
+    target_acquire_frames: 1
+    align_stable_frames: 5
+    target_acquire_error_ratio: 0.20
+    horizontal_kp: 0.0008
+    vertical_kp: 0.0008
+    align_joint_speed_limit: 0.08
+    horizon_lock_kp: 1.0
+    horizon_lock_speed_limit: 0.05
+    horizon_lock_tolerance: 0.02
+
+    control_rate_hz: 20.0
+    prepare_velocity_scaling: 0.05
+    prepare_acceleration_scaling: 0.05
+    prepare_planning_time_s: 10.0
+
+    error_topic: /brain_robot_vision/pixel_error
+    target_valid_topic: /brain_robot_vision/target_valid
+    joint_state_topic: /joint_states
+    joint_command_topic: /servo_node/delta_joint_cmds
+    servo_status_topic: /servo_node/status
+    servo_start_service: /servo_node/start_servo
+    servo_stop_service: /servo_node/stop_servo
+    # The future EOG adapter publishes true here for emergency stop.
+    emergency_stop_topic: /brain_robot_control/emergency_stop
+
+grasp_lift_executor:
+  ros__parameters:
+    # Simulation-only automatic close/attach/lift. The physical profile stays locked.
+    simulation_only: true
+    auto_execute: true
+    use_sim_time: true
+    arm_group: arm
+    gripper_group: gripper
+    end_effector_link: gripper_base
+    cup_name: medicine_cup
+    open_target: open
+    close_target: close
+    lift_reference_frame: world
+    camera_optical_frame: wrist_camera_optical_frame
+    target_point_topic: /brain_robot_vision/target_point_camera
+    target_timeout_s: 0.60
+    # Lift the camera-derived cup point to the simulation gripper's safe side-grasp height.
+    grasp_height_offset_m: 0.05
+    # First reach this world-horizontal safe stand-off, then approach linearly.
+    pregrasp_standoff_m: 0.16
+    grasp_depth_m: 0.08
+    cartesian_eef_step_m: 0.005
+    linear_approach_velocity_scaling: 0.025
+    lift_distance_m: 0.10
+    grasp_planning_time_s: 8.0
+    grasp_planning_attempts: 10
+    grasp_velocity_scaling: 0.05
+    grasp_acceleration_scaling: 0.05
+    grasp_position_tolerance: 0.01
+    grasp_orientation_tolerance: 0.05
+    grasp_scene_wait_s: 10.0
+    visual_state_topic: /brain_robot_visual_control/state
+    grasp_scene_ready_topic: /brain_robot_grasp/scene_ready
+    grasp_state_topic: /brain_robot_grasp/state
+    emergency_stop_topic: /brain_robot_control/emergency_stop
+    cup_follow_service: /brain_robot_pick_place/set_cup_follow
+    servo_stop_service: /servo_node/stop_servo

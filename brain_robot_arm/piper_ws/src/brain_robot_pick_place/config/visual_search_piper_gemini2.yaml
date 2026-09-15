@@ -1,0 +1,98 @@
+visual_search_controller:
+  ros__parameters:
+    # Physical profile is deliberately locked. Calibration must be completed first.
+    backend: piper
+    real_motion_enabled: false
+    observe_pose_calibrated: false
+    execute_prepare: true
+    use_sim_time: false
+
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    observe_joint_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    horizontal_joint: joint1
+    vertical_joint: joint5
+    horizon_joint_names: [joint4, joint6]
+    horizon_lock_positions: [0.0, 0.0]
+    # Remains disabled until real PiPER joint targets and Gemini2 mounting are calibrated.
+    level_align_enabled: false
+
+    # These fields must be calibrated on the physical PiPER and Gemini2.
+    horizontal_error_sign: 1.0
+    vertical_error_sign: 1.0
+
+    horizontal_search_min: -0.15
+    horizontal_search_max: 0.15
+    vertical_search_min: -0.08
+    vertical_search_max: 0.08
+    local_horizontal_range: 0.05
+    local_vertical_range: 0.04
+    horizontal_search_speed: 0.04
+    vertical_search_speed: 0.03
+    joint_position_tolerance: 0.01
+    search_timeout_s: 75.0
+    local_search_timeout_s: 5.0
+
+    target_timeout_s: 0.35
+    joint_state_timeout_s: 0.25
+    target_acquire_frames: 3
+    align_stable_frames: 5
+    target_acquire_error_ratio: 0.20
+    horizontal_kp: 0.0004
+    vertical_kp: 0.0004
+    align_joint_speed_limit: 0.03
+    horizon_lock_kp: 0.5
+    horizon_lock_speed_limit: 0.02
+    horizon_lock_tolerance: 0.02
+
+    control_rate_hz: 20.0
+    prepare_velocity_scaling: 0.02
+    prepare_acceleration_scaling: 0.02
+    prepare_planning_time_s: 10.0
+
+    # Gemini2 RGB/aligned-depth inputs are remapped in the detector launch profile.
+    error_topic: /brain_robot_vision/pixel_error
+    target_valid_topic: /brain_robot_vision/target_valid
+    joint_state_topic: /joint_states
+    joint_command_topic: /servo_node/delta_joint_cmds
+    servo_status_topic: /servo_node/status
+    servo_start_service: /servo_node/start_servo
+    servo_stop_service: /servo_node/stop_servo
+    emergency_stop_topic: /brain_robot_control/emergency_stop
+
+grasp_lift_executor:
+  ros__parameters:
+    # Hard lock: this executor is not authorized to close or lift the physical arm.
+    simulation_only: false
+    auto_execute: false
+    use_sim_time: false
+    arm_group: arm
+    gripper_group: gripper
+    end_effector_link: gripper_base
+    cup_name: medicine_cup
+    open_target: open
+    close_target: close
+    lift_reference_frame: world
+    camera_optical_frame: gemini2_color_optical_frame
+    target_point_topic: /brain_robot_vision/target_point_camera
+    target_timeout_s: 0.35
+    # Must be calibrated from the Gemini2 optical frame to the real gripper's grasp center.
+    grasp_height_offset_m: 0.0
+    # Calibration placeholder only; physical auto execution remains hard-locked below.
+    pregrasp_standoff_m: 0.16
+    grasp_depth_m: 0.08
+    cartesian_eef_step_m: 0.005
+    linear_approach_velocity_scaling: 0.010
+    lift_distance_m: 0.10
+    grasp_planning_time_s: 8.0
+    grasp_planning_attempts: 10
+    grasp_velocity_scaling: 0.02
+    grasp_acceleration_scaling: 0.02
+    grasp_position_tolerance: 0.01
+    grasp_orientation_tolerance: 0.05
+    grasp_scene_wait_s: 10.0
+    visual_state_topic: /brain_robot_visual_control/state
+    grasp_scene_ready_topic: /brain_robot_grasp/scene_ready
+    grasp_state_topic: /brain_robot_grasp/state
+    emergency_stop_topic: /brain_robot_control/emergency_stop
+    cup_follow_service: /brain_robot_pick_place/set_cup_follow
+    servo_stop_service: /servo_node/stop_servo

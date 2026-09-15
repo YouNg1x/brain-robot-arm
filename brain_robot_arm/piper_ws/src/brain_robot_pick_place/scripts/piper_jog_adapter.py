@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Guarded JointJog-to-PiPER adapter for the physical arm.
+
+MoveIt Servo publishes velocity-style JointJog messages, while the vendor
+PiPER ROS node accepts absolute JointState positions on joint_ctrl_single.
+This adapter integrates the velocities at a low rate and refuses to send
+anything until the operator explicitly arms it through the Trigger service.
+"""
+
+import math
+import time
+
+import rclpy
+from control_msgs.msg import JointJog
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
+from std_srvs.srv import Trigger
+
+
+class PiperJogAdapter(Node):
+    def __init__(self):
+        super().__init__('piper_jog_adapter')
+        self.declare_parameter('motion_enabled', False)
+        self.declare_parameter('input_topic', '/servo_node/delta_joint_cmds')
+        self.declare_parameter('joint_state_topic', '/joint_states')
+        self.declare_parameter('filtered_joint_state_topic', '/piper_moveit_joint_states')
+        self.declare_parameter('output_topic', '/joint_commands')
+        self.declare_parameter('emergency_stop_topic', '/brain_robot_control/emergency_stop')
+        self.declare_parameter('command_timeout_s', 0.20)
+        self.declare_parameter('joint_state_timeout_s', 0.30)
+        self.declare_parameter('publish_rate_hz', 50.0)
+        self.declare_parameter('max_velocity_rad_s', 0.035)
+        self.declare_parameter('joint_min', [-1.50, -0.30, -1.40, -0.80, -1.20, -0.80])
+        self.declare_parameter('joint_max', [1.50, 1.40, 0.40, 0.80, 1.20, 0.80])
+
+        self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        # The physical driver exposes one vendor-specific "gripper" value,
+        # whereas the MoveIt model contains two prismatic finger joints.  The
+        # visual-alignment path never commands the gripper, but Servo still
+        # requires a complete RobotState.  Publish its closed, passive model
+        # state so the arm's six-axis feedback remains valid for Servo.
+        self.model_only_joint_positions = {'joint7': 0.0, 'joint8': 0.0}
+        self.motion_enabled = bool(self.get_parameter('motion_enabled').value)
+        self.command_timeout_s = float(self.get_parameter('command_timeout_s').value)
+        self.joint_state_timeout_s = float(self.get_parameter('joint_state_timeout_s').value)
+        self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
+        self.max_velocity = float(self.get_parameter('max_velocity_rad_s').value)
+        self.joint_min = list(self.get_parameter('joint_min').value)
+        self.joint_max = list(self.get_parameter('joint_max').value)
+        if len(self.joint_min) != 6 or len(self.joint_max) != 6:
+            raise ValueError('joint_min and joint_max must each contain six values')
+        if self.max_velocity <= 0.0 or self.publish_rate_hz <= 0.0:
+            raise ValueError('max_velocity_rad_s and publish_rate_hz must be positive')
+
+        self.positions = {}
+        self.targets = {}
+        self.velocities = {name: 0.0 for name in self.joint_names}
+        self.last_state_time = 0.0
+        self.last_command_time = 0.0
+        self.last_tick = time.monotonic()
+        self.armed = False
+
+        qos = 10
+        self.create_subscription(
+            JointState, str(self.get_parameter('joint_state_topic').value),
+            self._joint_state, qos)
+        self.create_subscription(
+            JointJog, str(self.get_parameter('input_topic').value),
+            self._joint_jog, qos)
+        self.create_subscription(
+            Bool, str(self.get_parameter('emergency_stop_topic').value),
+            self._emergency_stop, qos)
+        self.command_publisher = self.create_publisher(
+            JointState, str(self.get_parameter('output_topic').value), qos)
+        self.filtered_joint_state_publisher = self.create_publisher(
+            JointState, str(self.get_parameter('filtered_joint_state_topic').value), qos)
+        self.arm_service = self.create_service(Trigger, '~/arm', self._arm)
+        self.disarm_service = self.create_service(Trigger, '~/disarm', self._disarm)
+        self.enable_service = self.create_service(Trigger, '~/enable_motion', self._enable_motion)
+        self.disable_service = self.create_service(Trigger, '~/disable_motion', self._disable_motion)
+        self.create_timer(1.0 / self.publish_rate_hz, self._tick)
+        self.get_logger().warn(
+            'PiPER physical adapter is disarmed. Set motion_enabled=true and call '
+            '/piper_jog_adapter/arm only after the workspace is clear.')
+
+    def _joint_state(self, message):
+        count = min(len(message.name), len(message.position))
+        filtered = JointState()
+        filtered.header = message.header
+        for index in range(count):
+            name = message.name[index]
+            if name in self.joint_names:
+                position = float(message.position[index])
+                self.positions[name] = position
+                filtered.name.append(name)
+                filtered.position.append(position)
+        if len(filtered.name) == len(self.joint_names):
+            for name, position in self.model_only_joint_positions.items():
+                filtered.name.append(name)
+                filtered.position.append(position)
+            self.filtered_joint_state_publisher.publish(filtered)
+        self.last_state_time = time.monotonic()
+        if not self.armed:
+            self.targets.update(self.positions)
+
+    def _joint_jog(self, message):
+        if not self.armed:
+            return
+        if not self._state_fresh():
+            self._disarm_internal('joint state stale')
+            return
+        values = {name: 0.0 for name in self.joint_names}
+        for index, name in enumerate(message.joint_names):
+            if name in values and index < len(message.velocities):
+                value = float(message.velocities[index])
+                values[name] = max(-self.max_velocity, min(self.max_velocity, value))
+        self.velocities = values
+        self.last_command_time = time.monotonic()
+
+    def _state_fresh(self):
+        return bool(self.positions) and time.monotonic() - self.last_state_time <= self.joint_state_timeout_s
+
+    def _arm(self, _request, response):
+        if not self.motion_enabled:
+            response.success = False
+            response.message = 'motion_enabled=false; physical motion remains locked.'
+            return response
+        if not self._state_fresh() or any(name not in self.positions for name in self.joint_names):
+            response.success = False
+            response.message = 'Fresh feedback for all six joints is required.'
+            return response
+        self.targets = {name: self.positions[name] for name in self.joint_names}
+        self.velocities = {name: 0.0 for name in self.joint_names}
+        self.last_command_time = 0.0
+        self.armed = True
+        response.success = True
+        response.message = 'Adapter armed; only clamped low-speed JointJog commands are forwarded.'
+        self.get_logger().warn('PHYSICAL MOTION ARMED')
+        return response
+
+    def _enable_motion(self, _request, response):
+        self.motion_enabled = True
+        response.success = True
+        response.message = 'Motion gate enabled; call /piper_jog_adapter/arm to start output.'
+        self.get_logger().warn('PHYSICAL MOTION GATE ENABLED; adapter is still disarmed')
+        return response
+
+    def _disable_motion(self, _request, response):
+        self.motion_enabled = False
+        self._disarm_internal('motion gate disabled')
+        response.success = True
+        response.message = 'Motion gate disabled and adapter disarmed.'
+        return response
+
+    def _disarm(self, _request, response):
+        self._disarm_internal('operator disarm')
+        response.success = True
+        response.message = 'Adapter disarmed; command output is held at feedback.'
+        return response
+
+    def _disarm_internal(self, reason):
+        self.armed = False
+        self.velocities = {name: 0.0 for name in self.joint_names}
+        self.targets.update(self.positions)
+        self.get_logger().warn('PHYSICAL MOTION DISARMED: %s', reason)
+
+    def _emergency_stop(self, message):
+        if message.data:
+            self._disarm_internal('external emergency stop')
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = max(0.0, min(now - self.last_tick, 0.10))
+        self.last_tick = now
+        if not self.armed:
+            return
+        if not self._state_fresh():
+            self._disarm_internal('joint state timeout')
+            return
+        if now - self.last_command_time > self.command_timeout_s:
+            self.velocities = {name: 0.0 for name in self.joint_names}
+            self.targets.update(self.positions)
+        for index, name in enumerate(self.joint_names):
+            current = self.targets.get(name, self.positions[name])
+            target = current + self.velocities[name] * dt
+            self.targets[name] = max(self.joint_min[index], min(self.joint_max[index], target))
+        command = JointState()
+        command.header.stamp = self.get_clock().now().to_msg()
+        command.name = list(self.joint_names)
+        command.position = [self.targets[name] for name in self.joint_names]
+        self.command_publisher.publish(command)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = None
+    try:
+        node = PiperJogAdapter()
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ValueError) as exc:
+        if node is not None:
+            node.get_logger().error(str(exc))
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
