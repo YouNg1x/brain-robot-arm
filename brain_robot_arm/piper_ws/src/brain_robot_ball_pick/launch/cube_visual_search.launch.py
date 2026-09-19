@@ -35,7 +35,13 @@ def generate_launch_description():
             'use_sim_time': False,
         },
     ]
+    robot_state_publisher = Node(
+        package='robot_state_publisher', executable='robot_state_publisher',
+        name='robot_state_publisher', output='screen',
+        parameters=[moveit.robot_description, {'use_sim_time': False}],
+        remappings=[('/joint_states', '/piper_moveit_joint_states')])
     return LaunchDescription([
+        robot_state_publisher,
         Node(package='moveit_ros_move_group', executable='move_group', name='move_group',
              output='screen', parameters=move_group_params,
              remappings=[('/joint_states', '/piper_moveit_joint_states')]),

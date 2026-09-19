@@ -64,6 +64,7 @@ grasp_lift_executor:
     top_down_grasp_enabled: false
     diagonal_side_grasp_enabled: false
     use_sim_time: false
+    lift_reference_frame: base_link
     camera_optical_frame: camera_color_optical_frame
     target_point_topic: /brain_robot_vision/target_point_camera
     target_size_topic: /brain_robot_vision/target_size
