@@ -16,10 +16,15 @@ visual_search_controller:
     horizon_lock_positions: [0.0, 0.0]
     horizontal_error_sign: 1.0
     vertical_error_sign: 1.0
-    horizontal_search_min: -0.35
-    horizontal_search_max: 0.35
-    vertical_search_min: -0.25
-    vertical_search_max: 0.25
+    # Absolute safety envelope; the actual full scan is centered on the
+    # current manually verified observation pose.
+    horizontal_search_min: -1.30
+    horizontal_search_max: 1.30
+    vertical_search_min: -1.00
+    vertical_search_max: 1.00
+    search_bounds_relative_to_start: true
+    full_search_horizontal_range: 0.12
+    full_search_vertical_range: 0.10
     local_horizontal_range: 0.08
     local_vertical_range: 0.08
     horizontal_search_speed: 0.005

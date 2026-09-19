@@ -34,6 +34,8 @@ class PiperJogAdapter(Node):
         self.declare_parameter('max_velocity_rad_s', 0.035)
         self.declare_parameter('joint_min', [-1.50, -0.30, -1.40, -0.80, -1.20, -0.80])
         self.declare_parameter('joint_max', [1.50, 1.40, 0.40, 0.80, 1.20, 0.80])
+        self.declare_parameter(
+            'visual_joint_max_delta_rad', [0.12, 0.02, 0.02, 0.05, 0.10, 0.05])
         self.declare_parameter('arm_trajectory_topic', '/brain_robot_grasp/arm_trajectory')
         self.declare_parameter('gripper_command_topic', '/brain_robot_grasp/gripper_command')
 
@@ -51,13 +53,19 @@ class PiperJogAdapter(Node):
         self.max_velocity = float(self.get_parameter('max_velocity_rad_s').value)
         self.joint_min = list(self.get_parameter('joint_min').value)
         self.joint_max = list(self.get_parameter('joint_max').value)
+        self.visual_joint_max_delta = list(
+            self.get_parameter('visual_joint_max_delta_rad').value)
         if len(self.joint_min) != 6 or len(self.joint_max) != 6:
             raise ValueError('joint_min and joint_max must each contain six values')
+        if len(self.visual_joint_max_delta) != 6 or any(
+                float(value) < 0.0 for value in self.visual_joint_max_delta):
+            raise ValueError('visual_joint_max_delta_rad must contain six non-negative values')
         if self.max_velocity <= 0.0 or self.publish_rate_hz <= 0.0:
             raise ValueError('max_velocity_rad_s and publish_rate_hz must be positive')
 
         self.positions = {}
         self.targets = {}
+        self.visual_baseline = {}
         self.gripper_target = None
         self.trajectory = None
         self.trajectory_start = 0.0
@@ -164,6 +172,7 @@ class PiperJogAdapter(Node):
             response.message = 'Fresh feedback for all six joints is required.'
             return response
         self.targets = {name: self.positions[name] for name in self.joint_names}
+        self.visual_baseline = {name: self.positions[name] for name in self.joint_names}
         self.velocities = {name: 0.0 for name in self.joint_names}
         self.last_command_time = 0.0
         self.armed = True
@@ -213,16 +222,19 @@ class PiperJogAdapter(Node):
         if not self._state_fresh():
             self._disarm_internal('joint state timeout')
             return
-        if self.trajectory is not None:
+        trajectory_active = self.trajectory is not None
+        if trajectory_active:
             if not self._apply_trajectory(now, dt):
                 self.trajectory = None
-        elif now - self.last_command_time > self.command_timeout_s:
+                trajectory_active = False
+        if not trajectory_active and now - self.last_command_time > self.command_timeout_s:
             self.velocities = {name: 0.0 for name in self.joint_names}
             self.targets.update(self.positions)
-        for index, name in enumerate(self.joint_names):
-            current = self.targets.get(name, self.positions[name])
-            target = current + self.velocities[name] * dt
-            self.targets[name] = max(self.joint_min[index], min(self.joint_max[index], target))
+        if not trajectory_active:
+            for index, name in enumerate(self.joint_names):
+                current = self.targets.get(name, self.positions[name])
+                target = current + self.velocities[name] * dt
+                self.targets[name] = self._limit_visual_target(index, name, target)
         command = JointState()
         command.header.stamp = self.get_clock().now().to_msg()
         command.name = list(self.joint_names)
@@ -231,6 +243,13 @@ class PiperJogAdapter(Node):
             command.name.append('gripper')
             command.position.append(self.gripper_target)
         self.command_publisher.publish(command)
+
+    def _limit_visual_target(self, index, name, desired):
+        baseline = self.visual_baseline.get(name, self.positions.get(name, desired))
+        delta = float(self.visual_joint_max_delta[index])
+        lower = max(self.joint_min[index], baseline - delta)
+        upper = min(self.joint_max[index], baseline + delta)
+        return max(lower, min(upper, desired))
 
     def _apply_trajectory(self, now, dt):
         points = self.trajectory.points

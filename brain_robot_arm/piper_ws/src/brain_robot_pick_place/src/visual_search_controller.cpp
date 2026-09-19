@@ -170,6 +170,12 @@ private:
     horizontal_search_max_ = ParameterOr<double>("horizontal_search_max", 0.90);
     vertical_search_min_ = ParameterOr<double>("vertical_search_min", -0.60);
     vertical_search_max_ = ParameterOr<double>("vertical_search_max", 0.95);
+    search_bounds_relative_to_start_ = ParameterOr<bool>(
+      "search_bounds_relative_to_start", false);
+    full_search_horizontal_range_ = ParameterOr<double>(
+      "full_search_horizontal_range", 0.12);
+    full_search_vertical_range_ = ParameterOr<double>(
+      "full_search_vertical_range", 0.10);
     local_horizontal_range_ = ParameterOr<double>("local_horizontal_range", 0.08);
     local_vertical_range_ = ParameterOr<double>("local_vertical_range", 0.06);
     horizontal_search_speed_ = ParameterOr<double>("horizontal_search_speed", 0.12);
@@ -381,6 +387,7 @@ private:
       horizontal_search_min_ >= horizontal_search_max_ ||
       vertical_search_min_ >= vertical_search_max_ ||
       local_horizontal_range_ <= 0.0 || local_vertical_range_ <= 0.0 ||
+      full_search_horizontal_range_ <= 0.0 || full_search_vertical_range_ <= 0.0 ||
       horizontal_search_speed_ <= 0.0 || vertical_search_speed_ <= 0.0 ||
       target_acquire_error_ratio_ <= 0.0 || target_acquire_error_ratio_ > 1.0 ||
       align_stable_frames_ < 1)
@@ -990,10 +997,22 @@ private:
       search_vertical_limit_max_ = std::min(
         vertical_search_max_, clamped_vertical_center + local_vertical_range_);
     } else {
-      search_horizontal_limit_min_ = horizontal_search_min_;
-      search_horizontal_limit_max_ = horizontal_search_max_;
-      search_vertical_limit_min_ = vertical_search_min_;
-      search_vertical_limit_max_ = vertical_search_max_;
+      if (search_bounds_relative_to_start_) {
+        // Keep a real-arm full scan around the manually verified start pose.
+        search_horizontal_limit_min_ = std::max(
+          horizontal_search_min_, horizontal_center - full_search_horizontal_range_);
+        search_horizontal_limit_max_ = std::min(
+          horizontal_search_max_, horizontal_center + full_search_horizontal_range_);
+        search_vertical_limit_min_ = std::max(
+          vertical_search_min_, vertical_center - full_search_vertical_range_);
+        search_vertical_limit_max_ = std::min(
+          vertical_search_max_, vertical_center + full_search_vertical_range_);
+      } else {
+        search_horizontal_limit_min_ = horizontal_search_min_;
+        search_horizontal_limit_max_ = horizontal_search_max_;
+        search_vertical_limit_min_ = vertical_search_min_;
+        search_vertical_limit_max_ = vertical_search_max_;
+      }
     }
     if (local) {
       search_horizontal_direction_ =
@@ -1240,6 +1259,9 @@ private:
   double horizontal_search_max_{0.90};
   double vertical_search_min_{-0.60};
   double vertical_search_max_{0.95};
+  bool search_bounds_relative_to_start_{false};
+  double full_search_horizontal_range_{0.12};
+  double full_search_vertical_range_{0.10};
   double local_horizontal_range_{0.08};
   double local_vertical_range_{0.06};
   double horizontal_search_speed_{0.12};

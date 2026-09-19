@@ -51,6 +51,8 @@
 - 重新编译并启动后，已实测 `gripper_base -> camera_color_optical_frame` 和 `base_link -> camera_color_optical_frame` 均能持续输出变换；TF 不再报告两棵不相连的树。开头偶发的 `Invalid frame ID` 出现在缓存刚启动阶段，随后查询成功。
 - 已确认实体 PiPER ROS 驱动的正式使能服务名称是根命名空间 `/enable_srv`，不是 `/piper_ctrl_single_node/enable_srv`。调用 `piper_msgs/srv/Enable` 且 `enable_request: true` 后，实体机械臂开始执行此前由视觉适配器排队的运动命令。
 - 实机首次真正运动时确认，驱动使能后会立即执行适配器当前已经积累的视觉目标；原来的 `0.035 rad/s` 对当前相机视野过快，可能使方块迅速离开画面。因此视觉搜索/居中速度和适配器限速已统一改为原来的五分之一：适配器 `0.007 rad/s`，搜索速度 `0.005/0.004 rad/s`，居中上限 `0.005 rad/s`。
+- 已按仿真红球流程补强真机搜索策略：目标丢失时仍先进入 `LOCAL_SEARCH`，局部搜索失败后再进入完整搜索；完整搜索不再默认扫完整个关节范围，而是以本次启动时的人工观测姿态为中心，在 J1 ±0.12 rad、J5 ±0.10 rad 内低速扫描，并受绝对安全边界限制。
+- `piper_jog_adapter` 现在在每次 `arm` 时记录视觉任务基线姿态；视觉 `JointJog` 只能使六轴相对该基线移动 `[0.12, 0.02, 0.02, 0.05, 0.10, 0.05]` rad。抓取轨迹仍走独立的轨迹通道，不受这条视觉搜索窗口限制，但仍受原有绝对关节范围和每周期限速保护。
 
 ## 当前代码架构
 
@@ -133,6 +135,8 @@ start_brain_robot_cube_real.sh
 其中前四个话题存在或有频率并不单独证明实体机械臂运动；最后必须以反馈关节角度发生预期变化作为实机验证证据。
 
 ## 本轮已实现、待真机验收
+
+本轮新增的搜索保护尚待真机验收。重新启动前必须先把机械臂从上次 `MOVEIT_SERVO_HARD_STOP_5` 停留姿态人工恢复到安全观测姿态；否则“以当前姿态为中心”的保护窗口会围绕错误姿态工作，不能替代机械复位。
 
 1. 抓取执行器新增显式 `/grasp_lift_executor/execute` 服务；只有当前视觉状态为 `GRASP_READY` 且真机抓取授权参数开启时才启动。
 2. 真机轨迹通过 `/brain_robot_grasp/arm_trajectory` 交给 `piper_jog_adapter`，不再调用被禁用的 MoveIt 实体 `execute()`。
