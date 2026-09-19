@@ -270,7 +270,7 @@ private:
       planning_time_s_ > 0.0 && planning_attempts_ > 0 && velocity_scaling_ > 0.0 &&
       velocity_scaling_ <= 1.0 && acceleration_scaling_ > 0.0 &&
       acceleration_scaling_ <= 1.0 && linear_approach_velocity_scaling_ > 0.0 &&
-      linear_approach_velocity_scaling_ <= velocity_scaling_;
+      linear_approach_velocity_scaling_ <= velocity_scaling_ && gripper_settle_s_ > 0.0;
     if (!configuration_ok_) {
       RCLCPP_ERROR(
         get_logger(),

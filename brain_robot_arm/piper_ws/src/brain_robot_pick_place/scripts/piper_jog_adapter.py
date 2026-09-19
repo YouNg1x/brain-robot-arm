@@ -214,7 +214,7 @@ class PiperJogAdapter(Node):
             self._disarm_internal('joint state timeout')
             return
         if self.trajectory is not None:
-            if not self._apply_trajectory(now):
+            if not self._apply_trajectory(now, dt):
                 self.trajectory = None
         elif now - self.last_command_time > self.command_timeout_s:
             self.velocities = {name: 0.0 for name in self.joint_names}
@@ -232,28 +232,39 @@ class PiperJogAdapter(Node):
             command.position.append(self.gripper_target)
         self.command_publisher.publish(command)
 
-    def _apply_trajectory(self, now):
+    def _apply_trajectory(self, now, dt):
         points = self.trajectory.points
         elapsed = now - self.trajectory_start
+        max_step = self.max_velocity * max(dt, 0.0)
+
+        def limit_target(name, desired):
+            current = self.targets.get(name, self.positions[name])
+            delta = max(-max_step, min(max_step, desired - current))
+            joint_index = self.joint_names.index(name)
+            return max(self.joint_min[joint_index], min(self.joint_max[joint_index], current + delta))
+
         def point_time(point):
             return float(point.time_from_start.sec) + float(point.time_from_start.nanosec) * 1e-9
         if len(points) == 1:
             point = points[0]
+            complete = True
             for index, name in enumerate(self.trajectory.joint_names):
                 if index < len(point.positions):
-                    joint_index = self.joint_names.index(name)
-                    self.targets[name] = max(
-                        self.joint_min[joint_index],
-                        min(self.joint_max[joint_index], float(point.positions[index])))
-            return False
+                    desired = float(point.positions[index])
+                    self.targets[name] = limit_target(name, desired)
+                    if abs(self.targets[name] - desired) > 1e-4:
+                        complete = False
+            return not complete
         if elapsed >= point_time(points[-1]):
             point = points[-1]
+            complete = True
             for index, name in enumerate(self.trajectory.joint_names):
                 if index < len(point.positions):
-                    self.targets[name] = max(
-                        self.joint_min[self.joint_names.index(name)],
-                        min(self.joint_max[self.joint_names.index(name)], float(point.positions[index])))
-            return False
+                    desired = float(point.positions[index])
+                    self.targets[name] = limit_target(name, desired)
+                    if abs(self.targets[name] - desired) > 1e-4:
+                        complete = False
+            return not complete
         previous = points[0]
         following = points[1]
         for candidate in points[1:]:
@@ -269,8 +280,7 @@ class PiperJogAdapter(Node):
                 continue
             value = float(previous.positions[index]) + alpha * (
                 float(following.positions[index]) - float(previous.positions[index]))
-            joint_index = self.joint_names.index(name)
-            self.targets[name] = max(self.joint_min[joint_index], min(self.joint_max[joint_index], value))
+            self.targets[name] = limit_target(name, value)
         return True
 
 
