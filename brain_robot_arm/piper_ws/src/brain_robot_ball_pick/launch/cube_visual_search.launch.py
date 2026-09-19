@@ -65,7 +65,7 @@ def generate_launch_description():
                  'filtered_joint_state_topic': '/piper_moveit_joint_states',
                  'output_topic': '/joint_commands',
                  'emergency_stop_topic': '/brain_robot_control/emergency_stop',
-                 'max_velocity_rad_s': 0.035,
+                 'max_velocity_rad_s': 0.007,
              }]),
         Node(package='brain_robot_pick_place', executable='visual_search_controller',
              name='visual_search_controller', output='screen', parameters=[
