@@ -42,6 +42,13 @@
   - `/joint_commands` 约 40--50 Hz；
   - `/joint_commands` 发布者为 `/piper_jog_adapter`，订阅者为 `/piper_ctrl_single_node`。
 
+### 4. 真机 TF 诊断进展
+
+- 已实测 `/piper_moveit_joint_states` 约 200 Hz，说明过滤后的关节反馈链正常。
+- 已实测 `base_link -> gripper_base` 可以查询到，说明 `robot_state_publisher` 已能建立机器人本体链。
+- 已确认此前的相机挂载错误：相机驱动已经发布 `camera_link -> camera_color_frame`，而项目又发布了 `gripper_base -> camera_color_frame`，导致 `camera_color_frame` 出现两个父节点并形成两棵 TF 树。
+- 已修复启动文件，将固定外参改为 `gripper_base -> camera_link`。该修复已提交为 `48b1eb8`，需要在虚拟机重新编译并重启流程后验收。
+
 ## 当前代码架构
 
 关键启动链路如下：
@@ -104,12 +111,7 @@ start_brain_robot_cube_real.sh
 
 ### 操作者可见界面
 
-一键启动后应显示两个图像窗口：
-
-1. 原始彩色图：`/camera/color/image_raw`，用于确认相机、视野、曝光和紫色方块位置。
-2. 检测调试图：`/brain_robot_vision/debug_image`，用于确认检测框、目标中心和识别状态。
-
-当前一键脚本已启动原始彩色图和检测调试图窗口；不能只通过 `ros2 topic hz` 判断视觉功能已经可用。
+一键启动后只显示检测调试图：`/brain_robot_vision/debug_image`，用于确认检测框、目标中心和识别状态。原始彩色图窗口已按操作者要求移除；不能只通过 `ros2 topic hz` 判断视觉功能已经可用。
 
 ### 控制数据链路
 
@@ -130,18 +132,17 @@ start_brain_robot_cube_real.sh
 1. 抓取执行器新增显式 `/grasp_lift_executor/execute` 服务；只有当前视觉状态为 `GRASP_READY` 且真机抓取授权参数开启时才启动。
 2. 真机轨迹通过 `/brain_robot_grasp/arm_trajectory` 交给 `piper_jog_adapter`，不再调用被禁用的 MoveIt 实体 `execute()`。
 3. 真机夹爪通过 `/brain_robot_grasp/gripper_command` 复用 `auto_sequence_speed50.py` 中的 `50000` 张开、`40000` 收紧值。
-4. 一键脚本新增按键 `6` 触发抓取，并同时打开原始彩色图和检测调试图窗口。
+4. 一键脚本新增按键 `6` 触发抓取，只打开检测调试图窗口。
 
-这些改动已完成静态检查，但尚未在当前 Windows 工作区完成 ROS2 C++ 构建，也尚未授权真机运动验收。
+这些改动已完成源码级检查；真机抓取仍未完成最终验收。最近一轮实机 TF 输出已证明机器人反馈正常，但相机挂载 TF 在修复前仍断链；修复提交后必须重新编译、重启并再次查询完整链路。
 
 ## 当前未完成事项
 
-1. 找出并修复 `piper_jog_adapter` 在一键 launch 下有时消失的具体原因；需要依赖独立日志和进程状态证据。
-2. 将一键启动流程稳定为单实例，并使终端不被驱动高频日志淹没。
-3. 在真机上先验证轨迹适配器的关节顺序、速度限制和轨迹完成等待。
-4. 验证 `50000/40000` 对当前实体夹爪的开合效果。
-5. 验证紫色方块偏离时的真机低速视觉修正，以及居中后停止。
-6. 完成以上步骤后，才进行一次显式 `6` 键抓取测试；不改为目标稳定后自动闭爪。
+1. 在虚拟机重新编译 `48b1eb8`，确认 `gripper_base -> camera_color_optical_frame` 连通且不再出现两棵 TF 树。
+2. 在真机上先验证轨迹适配器的关节顺序、速度限制和轨迹完成等待。
+3. 验证 `50000/40000` 对当前实体夹爪的开合效果。
+4. 验证紫色方块偏离时的真机低速视觉修正，以及居中后停止。
+5. 完成以上步骤后，才进行一次显式 `6` 键抓取测试；不改为目标稳定后自动闭爪。
 
 ## 推荐安全操作顺序
 
