@@ -46,7 +46,7 @@ def generate_launch_description():
         package='tf2_ros', executable='static_transform_publisher',
         name='piper_camera_mount_tf', output='screen',
         arguments=['0.0', '-0.05', '-0.10', '0.0', '0.0', '0.0',
-                   'gripper_base', 'camera_color_frame'])
+                   'gripper_base', 'camera_link'])
     return LaunchDescription([
         robot_state_publisher,
         camera_mount_tf,
