@@ -107,7 +107,6 @@ wait_for service /grasp_lift_executor/execute
 echo "[5/7] 检查完整 MoveIt 反馈..."
 wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
-start_group ros2 run image_view image_view --ros-args -r image:=/camera/color/image_raw
 start_group ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
 echo "[7/7] 全部组件已就绪。"
 echo
