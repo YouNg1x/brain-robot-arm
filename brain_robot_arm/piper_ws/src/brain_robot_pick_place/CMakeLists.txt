@@ -23,6 +23,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -85,8 +86,10 @@ ament_target_dependencies(grasp_lift_executor
   moveit_msgs
   moveit_ros_planning_interface
   rclcpp
+  sensor_msgs
   std_msgs
   std_srvs
+  trajectory_msgs
   tf2
   tf2_geometry_msgs
   tf2_ros

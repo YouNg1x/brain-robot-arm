@@ -22,10 +22,12 @@
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 #include <moveit_msgs/srv/get_position_ik.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Transform.h>
@@ -59,9 +61,17 @@ public:
       "/brain_robot_grasp/current_pose", rclcpp::QoS(1).transient_local());
     diagnostic_publisher_ = create_publisher<std_msgs::msg::String>(
       "/brain_robot_grasp/diagnostic", rclcpp::QoS(1).transient_local());
+    arm_trajectory_publisher_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      "/brain_robot_grasp/arm_trajectory", rclcpp::QoS(1));
+    gripper_command_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
+      "/brain_robot_grasp/gripper_command", rclcpp::QoS(1));
     visual_state_subscription_ = create_subscription<std_msgs::msg::String>(
       visual_state_topic_, rclcpp::QoS(1).transient_local(),
       [this](const std_msgs::msg::String::SharedPtr message) {
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          last_visual_state_ = message->data;
+        }
         HandleVisualState(message->data);
       });
     target_point_subscription_ = create_subscription<geometry_msgs::msg::PointStamped>(
@@ -100,6 +110,33 @@ public:
     cup_follow_client_ = create_client<std_srvs::srv::SetBool>(cup_follow_service_);
     servo_stop_client_ = create_client<std_srvs::srv::Trigger>(servo_stop_service_);
     compute_ik_client_ = create_client<moveit_msgs::srv::GetPositionIK>("/compute_ik");
+    execute_service_ = create_service<std_srvs::srv::Trigger>(
+      "~/execute", [this](
+        const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response) {
+        std::string visual_state;
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          visual_state = last_visual_state_;
+          if (worker_active_) {
+            response->success = false;
+            response->message = "A grasp sequence is already running.";
+            return;
+          }
+          if (!real_grasp_enabled_ || visual_state != "GRASP_READY") {
+            response->success = false;
+            response->message =
+              "Real grasp requires real_grasp_enabled=true and current state GRASP_READY.";
+            return;
+          }
+          grasp_requested_ = true;
+          cancel_requested_ = false;
+          prepared_ = true;
+        }
+        StartWorker();
+        response->success = true;
+        response->message = "Real grasp sequence started from the camera target.";
+      });
 
     PublishSceneReady(false);
     PublishState("WAITING_FOR_LEVEL_ALIGN");
@@ -145,6 +182,7 @@ private:
   void LoadParameters()
   {
     simulation_only_ = ParameterOr<bool>("simulation_only", true);
+    real_grasp_enabled_ = ParameterOr<bool>("real_grasp_enabled", false);
     auto_execute_ = ParameterOr<bool>("auto_execute", true);
     prepare_on_grasp_ready_ = ParameterOr<bool>("prepare_on_grasp_ready", false);
     top_down_grasp_enabled_ = ParameterOr<bool>("top_down_grasp_enabled", false);
@@ -172,6 +210,9 @@ private:
     grasp_center_offset_m_ = ParameterOr<double>(
       "grasp_center_offset_m", gripper_tip_offset_m_);
     grasp_contact_tolerance_m_ = ParameterOr<double>("grasp_contact_tolerance_m", 0.025);
+    gripper_open_value_ = ParameterOr<int>("gripper_open_value", 50000);
+    gripper_close_value_ = ParameterOr<int>("gripper_close_value", 40000);
+    gripper_settle_s_ = ParameterOr<double>("gripper_settle_s", 2.0);
     top_down_pregrasp_clearance_m_ = ParameterOr<double>(
       "top_down_pregrasp_clearance_m", 0.12);
     top_down_grasp_clearance_m_ = ParameterOr<double>(
@@ -212,7 +253,8 @@ private:
     servo_stop_service_ = ParameterOr<std::string>(
       "servo_stop_service", "/servo_node/stop_servo");
 
-    configuration_ok_ = simulation_only_ && auto_execute_ && lift_distance_m_ > 0.0 &&
+    configuration_ok_ = (simulation_only_ ? auto_execute_ : real_grasp_enabled_) &&
+      lift_distance_m_ > 0.0 &&
       grasp_depth_m_ > 0.0 && pregrasp_standoff_m_ > grasp_depth_m_ &&
       cartesian_eef_step_m_ > 0.0 && grasp_height_offset_m_ >= 0.0 &&
       gripper_tip_offset_m_ > 0.0 && top_down_pregrasp_clearance_m_ > 0.0 &&
@@ -232,7 +274,7 @@ private:
     if (!configuration_ok_) {
       RCLCPP_ERROR(
         get_logger(),
-        "Grasp execution is locked. This node currently permits only the enabled simulation profile.");
+        "Grasp execution is locked. Enable the selected simulation/real profile and all motion parameters.");
     }
   }
 
@@ -313,8 +355,11 @@ private:
         std::lock_guard<std::mutex> lock(state_mutex_);
         needs_prepare = !prepared_;
       }
-      if (needs_prepare) {
+      if (needs_prepare && simulation_only_) {
         PrepareScene();
+      } else if (needs_prepare) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        prepared_ = true;
       }
       bool prepared = false;
       bool grasp_requested = false;
@@ -374,6 +419,13 @@ private:
     if (!StopServo()) {
       Fail("SERVO_STOP_FAILED");
       return;
+    }
+    if (!simulation_only_) {
+      if (!CommandRealGripper(true) || cancel_requested_) {
+        Fail("OPEN_GRIPPER_FAILED");
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::duration<double>(gripper_settle_s_));
     }
     if (diagonal_side_grasp_enabled_) {
       DiagonalSidePointGraspAndLift();
@@ -565,8 +617,27 @@ private:
   void FinishGraspAndLift()
   {
     PublishState("CLOSING_GRIPPER");
-    if (!MoveGripper(close_target_) || cancel_requested_) {
+    if (!CommandRealGripper(false) || cancel_requested_) {
       Fail("CLOSE_GRIPPER_FAILED");
+      return;
+    }
+    if (!simulation_only_) {
+      std::this_thread::sleep_for(std::chrono::duration<double>(gripper_settle_s_));
+    }
+    if (!simulation_only_) {
+      PublishState("LIFTING");
+      auto lift_target = CurrentPoseInFrame(lift_reference_frame_);
+      if (lift_target.header.frame_id.empty()) {
+        Fail("CURRENT_POSE_UNAVAILABLE");
+        return;
+      }
+      lift_target.header.stamp = now();
+      lift_target.pose.position.z += lift_distance_m_;
+      if (!MoveArmToPose(lift_target, "LIFT") || cancel_requested_) {
+        Fail("LIFT_FAILED_HOLDING_CUBE");
+        return;
+      }
+      PublishState("HOLDING");
       return;
     }
     PublishState("VERIFYING_GRASP_CONTACT");
@@ -867,6 +938,44 @@ private:
            static_cast<bool>(gripper_->execute(plan));
   }
 
+  bool CommandRealGripper(bool open)
+  {
+    if (simulation_only_) {
+      return MoveGripper(open ? open_target_ : close_target_);
+    }
+    sensor_msgs::msg::JointState command;
+    command.header.stamp = now();
+    command.name = {"gripper"};
+    command.position = {static_cast<double>(
+        open ? gripper_open_value_ : gripper_close_value_) / 1000000.0};
+    gripper_command_publisher_->publish(command);
+    PublishDiagnostic(std::string("GRIPPER_COMMAND_") + (open ? "OPEN_" : "CLOSE_") +
+      std::to_string(open ? gripper_open_value_ : gripper_close_value_));
+    return true;
+  }
+
+  bool ExecuteArmTrajectory(const trajectory_msgs::msg::JointTrajectory & trajectory)
+  {
+    if (simulation_only_) {
+      return false;
+    }
+    if (trajectory.joint_names.empty() || trajectory.points.empty()) {
+      return false;
+    }
+    arm_trajectory_publisher_->publish(trajectory);
+    PublishDiagnostic("REAL_ARM_TRAJECTORY_PUBLISHED");
+    const auto & final_point = trajectory.points.back();
+    const double duration_s = static_cast<double>(final_point.time_from_start.sec) +
+      static_cast<double>(final_point.time_from_start.nanosec) * 1e-9;
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(duration_s + 1.0));
+    while (rclcpp::ok() && !cancel_requested_ && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return !cancel_requested_;
+  }
+
   bool AttachCup()
   {
     geometry_msgs::msg::PoseStamped gripper_pose = CurrentPoseInFrame(
@@ -958,7 +1067,10 @@ private:
     RCLCPP_INFO(
       get_logger(), "%s planned with %zu trajectory points.", stage.c_str(),
       plan.trajectory_.joint_trajectory.points.size());
-    return static_cast<bool>(arm_->execute(plan));
+    if (simulation_only_) {
+      return static_cast<bool>(arm_->execute(plan));
+    }
+    return ExecuteArmTrajectory(plan.trajectory_.joint_trajectory);
   }
 
   bool MoveArmCartesianToPose(
@@ -981,7 +1093,10 @@ private:
     RCLCPP_INFO(
       get_logger(), "%s Cartesian path has %zu trajectory points.", stage.c_str(),
       trajectory.joint_trajectory.points.size());
-    return static_cast<bool>(arm_->execute(trajectory));
+    if (simulation_only_) {
+      return static_cast<bool>(arm_->execute(trajectory));
+    }
+    return ExecuteArmTrajectory(trajectory.joint_trajectory);
   }
 
   std::string DiagnoseIk(const geometry_msgs::msg::PoseStamped & target)
@@ -1109,6 +1224,7 @@ private:
   }
 
   bool simulation_only_{true};
+  bool real_grasp_enabled_{false};
   bool auto_execute_{true};
   bool prepare_on_grasp_ready_{false};
   bool top_down_grasp_enabled_{false};
@@ -1133,6 +1249,9 @@ private:
   double gripper_tip_offset_m_{0.1358};
   double grasp_center_offset_m_{0.1358};
   double grasp_contact_tolerance_m_{0.025};
+  int gripper_open_value_{50000};
+  int gripper_close_value_{40000};
+  double gripper_settle_s_{2.0};
   double top_down_pregrasp_clearance_m_{0.12};
   double top_down_grasp_clearance_m_{0.005};
   double top_down_grasp_yaw_{0.0};
@@ -1186,6 +1305,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr target_pose_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr current_pose_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diagnostic_publisher_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_trajectory_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr gripper_command_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr visual_state_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr target_point_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_size_subscription_;
@@ -1193,6 +1314,8 @@ private:
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr cup_follow_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;
   rclcpp::Client<moveit_msgs::srv::GetPositionIK>::SharedPtr compute_ik_client_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr execute_service_;
+  std::string last_visual_state_;
 };
 
 }  // namespace brain_robot_pick_place

@@ -16,6 +16,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
+from trajectory_msgs.msg import JointTrajectory
 
 
 class PiperJogAdapter(Node):
@@ -33,6 +34,8 @@ class PiperJogAdapter(Node):
         self.declare_parameter('max_velocity_rad_s', 0.035)
         self.declare_parameter('joint_min', [-1.50, -0.30, -1.40, -0.80, -1.20, -0.80])
         self.declare_parameter('joint_max', [1.50, 1.40, 0.40, 0.80, 1.20, 0.80])
+        self.declare_parameter('arm_trajectory_topic', '/brain_robot_grasp/arm_trajectory')
+        self.declare_parameter('gripper_command_topic', '/brain_robot_grasp/gripper_command')
 
         self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
         # The physical driver exposes one vendor-specific "gripper" value,
@@ -55,6 +58,9 @@ class PiperJogAdapter(Node):
 
         self.positions = {}
         self.targets = {}
+        self.gripper_target = None
+        self.trajectory = None
+        self.trajectory_start = 0.0
         self.velocities = {name: 0.0 for name in self.joint_names}
         self.last_state_time = 0.0
         self.last_command_time = 0.0
@@ -71,6 +77,12 @@ class PiperJogAdapter(Node):
         self.create_subscription(
             Bool, str(self.get_parameter('emergency_stop_topic').value),
             self._emergency_stop, qos)
+        self.create_subscription(
+            JointTrajectory, str(self.get_parameter('arm_trajectory_topic').value),
+            self._trajectory, qos)
+        self.create_subscription(
+            JointState, str(self.get_parameter('gripper_command_topic').value),
+            self._gripper_command, qos)
         self.command_publisher = self.create_publisher(
             JointState, str(self.get_parameter('output_topic').value), qos)
         self.filtered_joint_state_publisher = self.create_publisher(
@@ -118,6 +130,27 @@ class PiperJogAdapter(Node):
         self.velocities = values
         self.last_command_time = time.monotonic()
 
+    def _trajectory(self, message):
+        if not self.armed or not self._state_fresh():
+            return
+        if not message.joint_names or not message.points:
+            return
+        if any(name not in self.joint_names for name in message.joint_names):
+            self.get_logger().error('Rejecting trajectory with an unknown joint name')
+            return
+        self.trajectory = message
+        self.trajectory_start = time.monotonic()
+        self.velocities = {name: 0.0 for name in self.joint_names}
+        self.last_command_time = time.monotonic()
+        self.get_logger().info('REAL ARM trajectory accepted: %d points', len(message.points))
+
+    def _gripper_command(self, message):
+        if not self.armed or not self._state_fresh() or not message.position:
+            return
+        value = float(message.position[0])
+        self.gripper_target = max(0.0, min(0.08, value))
+        self.last_command_time = time.monotonic()
+
     def _state_fresh(self):
         return bool(self.positions) and time.monotonic() - self.last_state_time <= self.joint_state_timeout_s
 
@@ -161,6 +194,8 @@ class PiperJogAdapter(Node):
 
     def _disarm_internal(self, reason):
         self.armed = False
+        self.trajectory = None
+        self.gripper_target = None
         self.velocities = {name: 0.0 for name in self.joint_names}
         self.targets.update(self.positions)
         self.get_logger().warn('PHYSICAL MOTION DISARMED: %s', reason)
@@ -178,7 +213,10 @@ class PiperJogAdapter(Node):
         if not self._state_fresh():
             self._disarm_internal('joint state timeout')
             return
-        if now - self.last_command_time > self.command_timeout_s:
+        if self.trajectory is not None:
+            if not self._apply_trajectory(now):
+                self.trajectory = None
+        elif now - self.last_command_time > self.command_timeout_s:
             self.velocities = {name: 0.0 for name in self.joint_names}
             self.targets.update(self.positions)
         for index, name in enumerate(self.joint_names):
@@ -189,7 +227,51 @@ class PiperJogAdapter(Node):
         command.header.stamp = self.get_clock().now().to_msg()
         command.name = list(self.joint_names)
         command.position = [self.targets[name] for name in self.joint_names]
+        if self.gripper_target is not None:
+            command.name.append('gripper')
+            command.position.append(self.gripper_target)
         self.command_publisher.publish(command)
+
+    def _apply_trajectory(self, now):
+        points = self.trajectory.points
+        elapsed = now - self.trajectory_start
+        def point_time(point):
+            return float(point.time_from_start.sec) + float(point.time_from_start.nanosec) * 1e-9
+        if len(points) == 1:
+            point = points[0]
+            for index, name in enumerate(self.trajectory.joint_names):
+                if index < len(point.positions):
+                    joint_index = self.joint_names.index(name)
+                    self.targets[name] = max(
+                        self.joint_min[joint_index],
+                        min(self.joint_max[joint_index], float(point.positions[index])))
+            return False
+        if elapsed >= point_time(points[-1]):
+            point = points[-1]
+            for index, name in enumerate(self.trajectory.joint_names):
+                if index < len(point.positions):
+                    self.targets[name] = max(
+                        self.joint_min[self.joint_names.index(name)],
+                        min(self.joint_max[self.joint_names.index(name)], float(point.positions[index])))
+            return False
+        previous = points[0]
+        following = points[1]
+        for candidate in points[1:]:
+            if elapsed <= point_time(candidate):
+                following = candidate
+                break
+            previous = candidate
+        t0 = point_time(previous)
+        t1 = point_time(following)
+        alpha = 0.0 if t1 <= t0 else max(0.0, min(1.0, (elapsed - t0) / (t1 - t0)))
+        for index, name in enumerate(self.trajectory.joint_names):
+            if index >= len(previous.positions) or index >= len(following.positions):
+                continue
+            value = float(previous.positions[index]) + alpha * (
+                float(following.positions[index]) - float(previous.positions[index]))
+            joint_index = self.joint_names.index(name)
+            self.targets[name] = max(self.joint_min[joint_index], min(self.joint_max[joint_index], value))
+        return True
 
 
 def main(args=None):

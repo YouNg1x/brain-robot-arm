@@ -100,16 +100,19 @@ start_group ros2 launch brain_robot_ball_pick cube_visual_search.launch.py
 wait_for node /move_group
 wait_for node /servo_node
 wait_for node /piper_jog_adapter
+wait_for node /grasp_lift_executor
 wait_for service /piper_jog_adapter/arm
+wait_for service /grasp_lift_executor/execute
 
 echo "[5/7] 检查完整 MoveIt 反馈..."
 wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
+start_group ros2 run image_view image_view --ros-args -r image:=/camera/color/image_raw
 start_group ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
 echo "[7/7] 全部组件已就绪。"
 echo
 echo "操作顺序：确认工作区安全后，按 1 开启运动门，按 2 使能适配器，按 3 开始搜寻。"
-echo "目标稳定后只会进入 GRASP_READY，不会自动闭爪；按 4 停止，按 5 失能适配器，按 0 退出。"
+echo "目标进入 GRASP_READY 后，确认夹爪附近无障碍再按 6 执行抓取；按 4 停止，按 5 失能适配器，按 0 退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
@@ -118,6 +121,7 @@ while true; do
       3) timeout 8s ros2 service call /visual_search_controller/start std_srvs/srv/Trigger '{}' || true ;;
       4) timeout 5s ros2 service call /visual_search_controller/stop std_srvs/srv/Trigger '{}' || true ;;
       5) timeout 5s ros2 service call /piper_jog_adapter/disarm std_srvs/srv/Trigger '{}' || true ;;
+      6) timeout 8s ros2 service call /grasp_lift_executor/execute std_srvs/srv/Trigger '{}' || true ;;
       0) exit 0 ;;
     esac
   fi

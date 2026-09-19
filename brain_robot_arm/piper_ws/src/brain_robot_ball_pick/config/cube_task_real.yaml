@@ -53,10 +53,13 @@ visual_search_controller:
 
 grasp_lift_executor:
   ros__parameters:
-    # Physical grasp execution remains disabled until the camera-to-gripper
-    # calibration and point-to-point controller are verified on the real arm.
+    # Real execution is available only through the explicit execute service/key 6.
     simulation_only: false
+    real_grasp_enabled: true
     auto_execute: false
+    gripper_open_value: 50000
+    gripper_close_value: 40000
+    gripper_settle_s: 2.0
     prepare_on_grasp_ready: false
     top_down_grasp_enabled: false
     diagonal_side_grasp_enabled: false
