@@ -1,0 +1,143 @@
+# PiPER 实体紫色方块视觉任务状态
+
+最后更新：2026-09-19
+
+本文是项目的实机进展与交接记录。它与设计文档不同：设计文档描述方案；本文只记录已经由源码、构建结果或实际 ROS 运行日志支持的事实，并把推断和待验证事项分开。
+
+## 当前目标与安全边界
+
+当前目标是用实体 PiPER、Astra/Orbbec RGB-D 相机和 ROS 2：识别紫色正方体（`PURPLE_CUBE`），低速视觉搜索并把目标调整到画面中心，随后稳定进入 `GRASP_READY`。
+
+当前阶段**不执行**自动接近、闭合夹爪或抬升。真实抓取动作只有在完成 TCP 标定、相机外参、碰撞范围、速度限制和空抓测试后，才可单独设计和启用。
+
+本项目已经从早期的红杯、仿真红球实验演进而来；它们不能再作为当前紫色方块检测参数或真机抓取策略的依据。
+
+## 已完成的重要节点
+
+### 1. 仿真阶段
+
+- 已完成 PiPER Gazebo、MoveIt2、RViz2、腕部相机和视觉检测的仿真环境搭建。
+- 曾完成红色小球的仿真视觉搜索、居中和抓取流程。该流程验证了仿真中的感知、MoveIt 和抓取状态机组合，但不等同于真实机械臂轨迹已标定。
+- 仿真抓取过程中曾验证视觉状态机包含搜索、目标重获、居中、整平/预抓取和抓取执行等阶段。
+
+### 2. 真实硬件基础链路
+
+- PiPER USB-CAN 适配器使用 `gs_usb` 驱动和 `can0`，工作波特率为 1 Mbps。
+- 在 CAN 接口和实体连接正常时，`/joint_states` 已实测可稳定发布约 170--200 Hz。
+- Astra/Orbbec ROS 2 驱动包已构建并能发布：
+  - `/camera/color/image_raw`
+  - `/camera/depth/image_raw`
+  - `/camera/color/camera_info`
+- OrbbecViewer 只能用于单独检查相机；它会占用设备，不能与 ROS 2 Astra 驱动同时使用。
+
+### 3. 紫色方块感知与真机控制适配
+
+- 已建立 `brain_robot_ball_pick` 中的紫色方块检测场景与配置。
+- 实机日志曾出现 `PURPLE_CUBE target DETECTED`，证明紫色方块检测在至少部分运行中成功。
+- 视觉控制器曾发布 `DIRECT_VISUAL_ALIGN_ACQUIRED`，说明检测目标已被视觉对准逻辑接收并满足过居中条件。
+- 已实现 `piper_jog_adapter.py`：它订阅 MoveIt Servo 的 `/servo_node/delta_joint_cmds`，读取实体 `/joint_states`，生成受限速保护的 `/joint_commands`，由 `/piper_ctrl_single_node` 订阅。
+- 已增加 `/piper_moveit_joint_states`，用于向 MoveIt 提供滤除实体驱动虚拟 `gripper` 字段、并补齐模型被动关节的关节状态。
+- 手动启动适配器、调用 `enable_motion` 与 `arm` 后，已实测：
+  - `/servo_node/delta_joint_cmds` 约 50 Hz；
+  - `/joint_commands` 约 40--50 Hz；
+  - `/joint_commands` 发布者为 `/piper_jog_adapter`，订阅者为 `/piper_ctrl_single_node`。
+
+## 当前代码架构
+
+关键启动链路如下：
+
+```text
+start_brain_robot_cube_real.sh
+  -> PiPER 驱动（必要时）
+  -> astra_camera（必要时）
+  -> cube_detector.launch.py
+  -> cube_visual_search.launch.py
+       -> move_group
+       -> servo_node
+       -> piper_jog_adapter.py
+       -> visual_search_controller
+       -> grasp_lift_executor
+  -> image_view（当前为 /brain_robot_vision/debug_image）
+```
+
+关键文件：
+
+- `scripts/start_brain_robot_cube_real.sh`：实体一键启动、PID 组管理、按键交互和关闭流程。
+- `piper_ws/src/brain_robot_ball_pick/launch/cube_visual_search.launch.py`：启动 MoveIt、Servo、适配器、视觉控制器和执行器。
+- `piper_ws/src/brain_robot_ball_pick/config/cube_task_real.yaml`：真机紫色方块任务参数与保护模式。
+- `piper_ws/src/brain_robot_pick_place/scripts/piper_jog_adapter.py`：Servo `JointJog` 到实体关节位置命令的受限转换。
+- `piper_ws/src/brain_robot_pick_place/src/visual_search_controller.cpp`：视觉搜索、居中和状态机。
+- `piper_ws/src/brain_robot_pick_place/config/piper_servo_real.yaml`：MoveIt Servo 真机配置。
+
+## 当前控制行为
+
+真实紫色方块配置处于保护模式。视觉控制开始后，目标偏离中心时应产生低速 Servo 修正；目标满足居中门槛后，控制器会进入 `DIRECT_VISUAL_ALIGN_ACQUIRED` 或 `GRASP_READY` 并停止持续修正。
+
+因此，目标已经居中时没有明显关节运动、或 `/joint_commands` 在控制器停止输出后不再持续发布，可能是当前设计行为，而不自动表示故障。
+
+## 已识别的故障与处理历史
+
+### 启动和进程生命周期不稳定
+
+- 有些一键启动后的运行中，`/piper_jog_adapter` 不存在；此时即使 Servo 有输出，也不会有节点把它转为 `/joint_commands`。
+- 直接运行 `ros2 run brain_robot_pick_place piper_jog_adapter.py` 能在部分测试中启动适配器，表明需要比较该默认启动与 `cube_visual_search.launch.py` 中参数化启动的差异。
+- `start_brain_robot_cube_real.sh` 已使用 `setsid` 和 PID 组记录本脚本启动的顶层进程；不能把“未保存后台 PID”当作未经验证的根因。
+
+### 重复节点与 ROS 图残留
+
+- 历史运行中曾出现同名的 `cube_detector`、`servo_node`、`visual_search_controller` 或 `move_group`。
+- `ros2 node list` 的重复条目不总是代表真实双进程：曾出现进程已结束但 ROS daemon/图仍显示旧节点的情况。
+- 单实例判断必须同时检查 OS 进程、ROS 节点图和 ROS daemon 重启后的状态；仅凭 `ros2 node list` 不能直接下结论。
+
+### 相机与 CAN 的外部条件
+
+- OrbbecViewer 与 Astra ROS 驱动不能同时占用相机。
+- USB 连接不稳定曾造成相机节点无法找到 UVC 彩色设备。
+- CAN 适配器或机械臂连接松动曾造成 `can0 is loss`、无反馈或无 CAN 报文；这属于硬件/接口状态，不应误判为视觉或 Servo 算法故障。
+
+### 早期 Servo 模型状态问题
+
+- 实体驱动的 `JointState` 曾包含模型中不存在的 `gripper`，且 MoveIt 模型还需要被动关节状态；这曾引发 Servo 因关节模型不完整而退出。
+- 适配器的过滤关节状态话题用于隔离这一差异。后续每次重构都必须保留此数据适配层。
+
+## 当前验证标准
+
+### 操作者可见界面
+
+一键启动后应显示两个图像窗口：
+
+1. 原始彩色图：`/camera/color/image_raw`，用于确认相机、视野、曝光和紫色方块位置。
+2. 检测调试图：`/brain_robot_vision/debug_image`，用于确认检测框、目标中心和识别状态。
+
+当前一键脚本已启动检测调试图窗口；原始彩色图窗口尚需作为独立验收项确认或补充。不能只通过 `ros2 topic hz` 判断视觉功能已经可用。
+
+### 控制数据链路
+
+在目标偏离画面中心、运动门开启、适配器已 arm 的情况下，按以下顺序验证：
+
+```text
+/joint_states
+  -> /piper_moveit_joint_states
+  -> /servo_node/delta_joint_cmds
+  -> /joint_commands
+  -> /joint_states 的实际角度变化
+```
+
+其中前四个话题存在或有频率并不单独证明实体机械臂运动；最后必须以反馈关节角度发生预期变化作为实机验证证据。
+
+## 当前未完成事项
+
+1. 找出并修复 `piper_jog_adapter` 在一键 launch 下有时消失的具体原因；需要依赖独立日志和进程状态证据。
+2. 将一键启动流程稳定为单实例，并使终端不被驱动高频日志淹没。
+3. 保证原始彩色图与检测调试图窗口均实际显示。
+4. 在不开放抓取动作的前提下，稳定验证紫色方块偏离时的真机低速视觉修正，以及居中后停止。
+5. 完成以上步骤后，另行设计真实抓取标定与安全测试；本记录不授权自动抓取。
+
+## 推荐安全操作顺序
+
+1. 清空机械臂工作区并确认急停/手动断电方式可用。
+2. 只启动一套实体流程。
+3. 先观察两个图像窗口和实体反馈，再开启运动门。
+4. 开启运动门、arm 适配器后，才启动视觉搜索。
+5. 发生异常时先停止视觉控制，再 disarm/关闭运动门，最后结束相关进程。
+
