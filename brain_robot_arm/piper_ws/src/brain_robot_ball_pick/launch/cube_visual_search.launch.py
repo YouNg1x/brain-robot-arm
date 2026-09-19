@@ -40,8 +40,16 @@ def generate_launch_description():
         name='robot_state_publisher', output='screen',
         parameters=[moveit.robot_description, {'use_sim_time': False}],
         remappings=[('/joint_states', '/piper_moveit_joint_states')])
+    # Calibrated physical mount: the gripper is 10 cm forward and 5 cm below
+    # the camera optical origin; camera axes are parallel to gripper_base.
+    camera_mount_tf = Node(
+        package='tf2_ros', executable='static_transform_publisher',
+        name='piper_camera_mount_tf', output='screen',
+        arguments=['0.0', '-0.05', '-0.10', '0.0', '0.0', '0.0',
+                   'gripper_base', 'camera_color_frame'])
     return LaunchDescription([
         robot_state_publisher,
+        camera_mount_tf,
         Node(package='moveit_ros_move_group', executable='move_group', name='move_group',
              output='screen', parameters=move_group_params,
              remappings=[('/joint_states', '/piper_moveit_joint_states')]),
