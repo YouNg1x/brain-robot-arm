@@ -49,6 +49,7 @@
 - 已确认此前的相机挂载错误：相机驱动已经发布 `camera_link -> camera_color_frame`，而项目又发布了 `gripper_base -> camera_color_frame`，导致 `camera_color_frame` 出现两个父节点并形成两棵 TF 树。
 - 已修复启动文件，将固定外参改为 `gripper_base -> camera_link`。该修复已提交为 `48b1eb8`，需要在虚拟机重新编译并重启流程后验收。
 - 重新编译并启动后，已实测 `gripper_base -> camera_color_optical_frame` 和 `base_link -> camera_color_optical_frame` 均能持续输出变换；TF 不再报告两棵不相连的树。开头偶发的 `Invalid frame ID` 出现在缓存刚启动阶段，随后查询成功。
+- 已确认实体 PiPER ROS 驱动的正式使能服务名称是根命名空间 `/enable_srv`，不是 `/piper_ctrl_single_node/enable_srv`。调用 `piper_msgs/srv/Enable` 且 `enable_request: true` 后，实体机械臂开始执行此前由视觉适配器排队的运动命令。
 
 ## 当前代码架构
 
@@ -80,6 +81,8 @@ start_brain_robot_cube_real.sh
 ## 当前控制行为
 
 真实紫色方块配置处于保护模式。视觉控制开始后，目标偏离中心时应产生低速 Servo 修正；目标满足居中门槛后，控制器会进入 `DIRECT_VISUAL_ALIGN_ACQUIRED` 或 `GRASP_READY` 并停止持续修正。
+
+实体驱动还有一层独立于视觉运动门的 ROS 内部使能状态：`/piper_jog_adapter` 的 `enable_motion`/`arm` 只控制保护适配器，不能替代 `/enable_srv` 对 `piper_ctrl_single_node` 的使能。未调用 `/enable_srv` 时，`/joint_commands` 仍可有数据，但驱动回调不会调用 `JointCtrl()`，实体机械臂不会运动。
 
 因此，目标已经居中时没有明显关节运动、或 `/joint_commands` 在控制器停止输出后不再持续发布，可能是当前设计行为，而不自动表示故障。
 
@@ -151,6 +154,19 @@ start_brain_robot_cube_real.sh
 3. 先观察两个图像窗口和实体反馈，再开启运动门。
 4. 开启运动门、arm 适配器后，才启动视觉搜索。
 5. 发生异常时先停止视觉控制，再 disarm/关闭运动门，最后结束相关进程。
+
+### 实体驱动使能命令
+
+启动流程后，在确认工作区安全时执行一次：
+
+```bash
+timeout 8s ros2 service call \
+  /enable_srv \
+  piper_msgs/srv/Enable \
+  "{enable_request: true}"
+```
+
+必须返回 `enable_response: true`。这一步完成后，才按 `1`、`2`、`3` 进行保护门、适配器和视觉搜索操作。停止时先按 `4`、`5`，再按 `0`。
 
 ## 可直接执行的真机启动流程
 
