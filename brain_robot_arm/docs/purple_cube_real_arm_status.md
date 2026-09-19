@@ -151,3 +151,54 @@ start_brain_robot_cube_real.sh
 3. 先观察两个图像窗口和实体反馈，再开启运动门。
 4. 开启运动门、arm 适配器后，才启动视觉搜索。
 5. 发生异常时先停止视觉控制，再 disarm/关闭运动门，最后结束相关进程。
+
+## 可直接执行的真机启动流程
+
+以下命令在虚拟机终端执行。启动前确认相机 USB、CAN 适配器和机械臂接口已连接；OrbbecViewer 必须关闭，避免占用相机。
+
+### 1. 编译并安装当前版本
+
+```bash
+conda deactivate
+bash /mnt/hgfs/ub/brain_robot_arm/scripts/install_piper_cube_pick.sh
+```
+
+该脚本会把共享目录中的两个 ROS 包复制到 `~/piper_ws`，重新编译，并安装一键脚本到 `~/start_brain_robot_cube_real.sh`。本次 TF 修复必须重新执行这一步后才会进入已安装的 launch 文件。
+
+### 2. 启动实体保护流程
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/piper_ros/install/setup.bash
+source ~/piper_ws/install/setup.bash
+bash ~/start_brain_robot_cube_real.sh
+```
+
+启动脚本会依次检查或启动 CAN/PiPER 驱动、Astra RGB-D 相机、紫色方块检测器、MoveIt、Servo、真机保护适配器、视觉控制器、抓取执行器，并只打开 `/brain_robot_vision/debug_image` 检测窗口。
+
+### 3. 启动后的按键顺序
+
+```text
+1  开启运动门
+2  使能并 arm 适配器
+3  自动搜寻紫色方块并居中
+6  仅当状态为 GRASP_READY 且现场安全时执行一次抓取
+4  停止视觉运动
+5  失能适配器
+0  退出并自动关闭运动门
+```
+
+### 4. 按 6 前的最低验证
+
+在按 `6` 前，另开终端执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/piper_ros/install/setup.bash
+source ~/piper_ws/install/setup.bash
+
+timeout 8s ros2 run tf2_ros tf2_echo \
+  gripper_base camera_color_optical_frame
+```
+
+必须持续输出变换，且不能出现 `two or more unconnected trees`。同时检测窗口应显示紫色方块，状态话题应为 `GRASP_READY`。如果 TF、反馈或现场安全任一项不满足，先按 `4`、`5`，不要按 `6`。
