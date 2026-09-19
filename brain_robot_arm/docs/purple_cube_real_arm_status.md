@@ -48,6 +48,7 @@
 - 已实测 `base_link -> gripper_base` 可以查询到，说明 `robot_state_publisher` 已能建立机器人本体链。
 - 已确认此前的相机挂载错误：相机驱动已经发布 `camera_link -> camera_color_frame`，而项目又发布了 `gripper_base -> camera_color_frame`，导致 `camera_color_frame` 出现两个父节点并形成两棵 TF 树。
 - 已修复启动文件，将固定外参改为 `gripper_base -> camera_link`。该修复已提交为 `48b1eb8`，需要在虚拟机重新编译并重启流程后验收。
+- 重新编译并启动后，已实测 `gripper_base -> camera_color_optical_frame` 和 `base_link -> camera_color_optical_frame` 均能持续输出变换；TF 不再报告两棵不相连的树。开头偶发的 `Invalid frame ID` 出现在缓存刚启动阶段，随后查询成功。
 
 ## 当前代码架构
 
@@ -138,11 +139,10 @@ start_brain_robot_cube_real.sh
 
 ## 当前未完成事项
 
-1. 在虚拟机重新编译 `48b1eb8`，确认 `gripper_base -> camera_color_optical_frame` 连通且不再出现两棵 TF 树。
-2. 在真机上先验证轨迹适配器的关节顺序、速度限制和轨迹完成等待。
-3. 验证 `50000/40000` 对当前实体夹爪的开合效果。
-4. 验证紫色方块偏离时的真机低速视觉修正，以及居中后停止。
-5. 完成以上步骤后，才进行一次显式 `6` 键抓取测试；不改为目标稳定后自动闭爪。
+1. 在真机上先验证轨迹适配器的关节顺序、速度限制和轨迹完成等待。
+2. 验证 `50000/40000` 对当前实体夹爪的开合效果。
+3. 验证紫色方块偏离时的真机低速视觉修正，以及居中后停止。
+4. 完成以上步骤后，才进行一次显式 `6` 键抓取测试；不改为目标稳定后自动闭爪。
 
 ## 推荐安全操作顺序
 
