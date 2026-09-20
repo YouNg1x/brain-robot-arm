@@ -722,13 +722,23 @@ private:
     }
 
     PublishZeroLocked();
-    if (local && full_search_retries_ < 1) {
-      ++full_search_retries_;
-      SetStateLocked(ControlState::PREPARE, "LOCAL_SEARCH_FAILED_RETRY_FULL_SCAN");
-      relaunch_prepare = true;
+    const auto horizontal = CurrentJointLocked(horizontal_joint_);
+    const auto vertical = CurrentJointLocked(vertical_joint_);
+    if (!horizontal || !vertical) {
+      StopLocked(ControlState::FAULT, "SEARCH_JOINT_STATE_MISSING");
       return;
     }
-    StopLocked(ControlState::STOPPED, local ? "LOCAL_SEARCH_TIMEOUT" : "FULL_SEARCH_COMPLETE_NO_TARGET");
+    if (local) {
+      // Match the simulation behavior: a failed local scan expands directly
+      // into the full scan from the current pose; never reset the arm here.
+      InitializeSearchLocked(false, *horizontal, *vertical);
+      SetStateLocked(ControlState::SEARCH, "LOCAL_SEARCH_FAILED_CONTINUE_FULL_SCAN");
+    } else {
+      // Keep searching continuously.  A completed sweep starts another one
+      // from the current pose instead of returning to PREPARE.
+      InitializeSearchLocked(false, *horizontal, *vertical);
+      SetStateLocked(ControlState::SEARCH, "FULL_SEARCH_CYCLE_RESTART");
+    }
   }
 
   bool StepSearchLocked()
