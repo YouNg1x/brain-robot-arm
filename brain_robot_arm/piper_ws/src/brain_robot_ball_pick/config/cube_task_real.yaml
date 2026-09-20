@@ -45,6 +45,10 @@ visual_search_controller:
     prepare_velocity_scaling: 0.01
     prepare_acceleration_scaling: 0.01
     prepare_planning_time_s: 2.0
+    # The real adapter keeps the previously requested 1/5 speed.  Allow
+    # enough time to reach the fixed simulation observation pose from a
+    # manually recovered physical pose.
+    prepare_execution_timeout_s: 300.0
     error_topic: /brain_robot_vision/pixel_error
     target_valid_topic: /brain_robot_vision/target_valid
     joint_state_topic: /joint_states
