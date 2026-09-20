@@ -23,6 +23,7 @@
 #include <std_msgs/msg/int8.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 namespace brain_robot_pick_place
 {
@@ -200,6 +201,7 @@ private:
     prepare_velocity_scaling_ = ParameterOr<double>("prepare_velocity_scaling", 0.05);
     prepare_acceleration_scaling_ = ParameterOr<double>("prepare_acceleration_scaling", 0.05);
     prepare_planning_time_s_ = ParameterOr<double>("prepare_planning_time_s", 10.0);
+    prepare_execution_timeout_s_ = ParameterOr<double>("prepare_execution_timeout_s", 45.0);
 
     error_topic_ = ParameterOr<std::string>(
       "error_topic", "/brain_robot_vision/pixel_error");
@@ -287,6 +289,8 @@ private:
       });
     joint_command_publisher_ = create_publisher<control_msgs::msg::JointJog>(
       joint_command_topic_, rclcpp::QoS(10));
+    arm_trajectory_publisher_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      "/brain_robot_grasp/arm_trajectory", rclcpp::QoS(1));
     state_publisher_ = create_publisher<std_msgs::msg::String>(
       "/brain_robot_visual_control/state", rclcpp::QoS(1).transient_local());
     reason_publisher_ = create_publisher<std_msgs::msg::String>(
@@ -389,6 +393,7 @@ private:
       local_horizontal_range_ <= 0.0 || local_vertical_range_ <= 0.0 ||
       full_search_horizontal_range_ <= 0.0 || full_search_vertical_range_ <= 0.0 ||
       horizontal_search_speed_ <= 0.0 || vertical_search_speed_ <= 0.0 ||
+      prepare_execution_timeout_s_ <= 0.0 ||
       target_acquire_error_ratio_ <= 0.0 || target_acquire_error_ratio_ > 1.0 ||
       align_stable_frames_ < 1)
     {
@@ -519,7 +524,35 @@ private:
       FailPrepare("PREPARE_PLAN_ONLY_COMPLETE");
       return;
     }
-    if (!static_cast<bool>(move_group->execute(plan)) || cancel_requested_) {
+    if (backend_ == "piper") {
+      arm_trajectory_publisher_->publish(plan.trajectory_.joint_trajectory);
+      const auto deadline = SteadyClock::now() +
+        std::chrono::duration<double>(prepare_execution_timeout_s_);
+      bool reached = false;
+      while (!cancel_requested_ && SteadyClock::now() < deadline) {
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          reached = true;
+          for (std::size_t index = 0; index < joint_names_.size(); ++index) {
+            const auto current = CurrentJointLocked(joint_names_[index]);
+            if (!current || std::abs(*current - observe_joint_positions_[index]) >
+              joint_position_tolerance_)
+            {
+              reached = false;
+              break;
+            }
+          }
+        }
+        if (reached) {
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      if (!reached || cancel_requested_) {
+        FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_EXECUTION_FAILED");
+        return;
+      }
+    } else if (!static_cast<bool>(move_group->execute(plan)) || cancel_requested_) {
       FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_EXECUTION_FAILED");
       return;
     }
@@ -1284,6 +1317,7 @@ private:
   double prepare_velocity_scaling_{0.05};
   double prepare_acceleration_scaling_{0.05};
   double prepare_planning_time_s_{10.0};
+  double prepare_execution_timeout_s_{45.0};
 
   std::string error_topic_;
   std::string target_valid_topic_;
@@ -1326,6 +1360,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr servo_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
   rclcpp::Publisher<control_msgs::msg::JointJog>::SharedPtr joint_command_publisher_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_trajectory_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr reason_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr search_direction_publisher_;

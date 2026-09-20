@@ -74,6 +74,7 @@ ament_target_dependencies(visual_search_controller
   sensor_msgs
   std_msgs
   std_srvs
+  trajectory_msgs
   tf2
   tf2_geometry_msgs
   tf2_ros
