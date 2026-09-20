@@ -223,6 +223,10 @@ private:
       "error_topic", "/brain_robot_vision/pixel_error");
     target_valid_topic_ = ParameterOr<std::string>(
       "target_valid_topic", "/brain_robot_vision/target_valid");
+    candidate_error_topic_ = ParameterOr<std::string>(
+      "candidate_error_topic", "/brain_robot_vision/color_candidate_error");
+    candidate_valid_topic_ = ParameterOr<std::string>(
+      "candidate_valid_topic", "/brain_robot_vision/color_candidate_valid");
     joint_state_topic_ = ParameterOr<std::string>("joint_state_topic", "/joint_states");
     joint_command_topic_ = ParameterOr<std::string>(
       "joint_command_topic", "/servo_node/delta_joint_cmds");
@@ -249,9 +253,11 @@ private:
         error_y_px_ = message->vector.y;
         target_error_ratio_ = message->vector.z;
         error_received_time_ = SteadyClock::now();
+        const double alignment_ratio = candidate_only_alignment_ && !target_valid_ ?
+          candidate_error_ratio_ : target_error_ratio_;
         if ((state_ == ControlState::ALIGN || state_ == ControlState::LEVEL_ALIGN ||
-          state_ == ControlState::FINAL_ALIGN) && target_valid_ &&
-          target_error_ratio_ <= target_acquire_error_ratio_)
+          state_ == ControlState::FINAL_ALIGN) && (target_valid_ || candidate_only_alignment_) &&
+          alignment_ratio <= target_acquire_error_ratio_)
         {
           ++aligned_frames_;
         } else if (state_ == ControlState::ALIGN || state_ == ControlState::LEVEL_ALIGN ||
@@ -266,11 +272,30 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         target_valid_ = message->data;
         if (target_valid_) {
+          candidate_only_alignment_ = false;
           ++target_valid_frames_;
           last_target_valid_time_ = SteadyClock::now();
         } else {
           target_valid_frames_ = 0;
           aligned_frames_ = 0;
+        }
+      });
+    candidate_error_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+      candidate_error_topic_, sensor_qos,
+      [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        candidate_error_x_px_ = message->vector.x;
+        candidate_error_y_px_ = message->vector.y;
+        candidate_error_ratio_ = message->vector.z;
+        candidate_error_received_time_ = SteadyClock::now();
+      });
+    candidate_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      candidate_valid_topic_, sensor_qos,
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        candidate_valid_ = message->data;
+        if (!candidate_valid_) {
+          candidate_error_received_time_ = SteadyTime{};
         }
       });
     joint_state_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
@@ -758,6 +783,14 @@ private:
       return;
     }
 
+    if (local && CandidateFreshLocked()) {
+      candidate_only_alignment_ = true;
+      aligned_frames_ = 0;
+      PublishControlDetailLocked("PHASE=ALIGN COLOR_CANDIDATE_REACQUIRE");
+      SetStateLocked(ControlState::ALIGN, "COLOR_CANDIDATE_REACQUIRE");
+      return;
+    }
+
     const double timeout = local ? local_search_timeout_s_ : search_timeout_s_;
     const double elapsed = std::chrono::duration<double>(SteadyClock::now() - search_start_time_).count();
     const bool search_complete = elapsed >= timeout || StepSearchLocked();
@@ -937,19 +970,29 @@ private:
 
   void HandleAlignLocked()
   {
-    if (!TargetFreshLocked()) {
+    const bool confirmed = TargetFreshLocked();
+    const bool candidate = candidate_only_alignment_ && CandidateFreshLocked();
+    if (!confirmed && !candidate) {
       BeginLocalSearchLocked("TARGET_LOST_DURING_ALIGN");
       return;
     }
+    const double error_x = confirmed ? error_x_px_ : candidate_error_x_px_;
+    const double error_y = confirmed ? error_y_px_ : candidate_error_y_px_;
     const double horizontal_velocity = std::clamp(
-      horizontal_error_sign_ * horizontal_kp_ * error_x_px_,
+      horizontal_error_sign_ * horizontal_kp_ * error_x,
       -align_joint_speed_limit_, align_joint_speed_limit_);
     const double vertical_velocity = std::clamp(
-      vertical_error_sign_ * vertical_kp_ * error_y_px_,
+      vertical_error_sign_ * vertical_kp_ * error_y,
       -align_joint_speed_limit_, align_joint_speed_limit_);
     PublishAlignmentJointLocked(horizontal_velocity, vertical_velocity);
 
     if (aligned_frames_ >= align_stable_frames_) {
+      if (candidate_only_alignment_ && !confirmed) {
+        aligned_frames_ = 0;
+        PublishControlDetailLocked("PHASE=ALIGN COLOR_CANDIDATE_HOLD_FOR_CONFIRMATION");
+        return;
+      }
+      candidate_only_alignment_ = false;
       if (direct_grasp_after_align_) {
         aligned_frames_ = 0;
         PublishZeroLocked();
@@ -1104,6 +1147,7 @@ private:
     }
     target_valid_frames_ = 0;
     aligned_frames_ = 0;
+    candidate_only_alignment_ = false;
     InitializeSearchLocked(true, *horizontal, *vertical);
     SetStateLocked(ControlState::LOCAL_SEARCH, reason);
   }
@@ -1305,6 +1349,11 @@ private:
            Fresh(error_received_time_, target_timeout_s_);
   }
 
+  bool CandidateFreshLocked() const
+  {
+    return candidate_valid_ && Fresh(candidate_error_received_time_, target_timeout_s_);
+  }
+
   bool JointStateFreshLocked() const
   {
     return Fresh(joint_state_time_, joint_state_timeout_s_);
@@ -1453,6 +1502,8 @@ private:
 
   std::string error_topic_;
   std::string target_valid_topic_;
+  std::string candidate_error_topic_;
+  std::string candidate_valid_topic_;
   std::string joint_state_topic_;
   std::string joint_command_topic_;
   std::string servo_status_topic_;
@@ -1465,10 +1516,16 @@ private:
   SteadyTime joint_state_time_{};
   SteadyTime error_received_time_{};
   SteadyTime last_target_valid_time_{};
+  SteadyTime candidate_error_received_time_{};
   bool target_valid_{false};
+  bool candidate_valid_{false};
+  bool candidate_only_alignment_{false};
   double error_x_px_{0.0};
   double error_y_px_{0.0};
   double target_error_ratio_{1.0};
+  double candidate_error_x_px_{0.0};
+  double candidate_error_y_px_{0.0};
+  double candidate_error_ratio_{1.0};
   int target_valid_frames_{0};
   int aligned_frames_{0};
   bool servo_status_seen_{false};
@@ -1489,6 +1546,8 @@ private:
 
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr error_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_valid_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr candidate_error_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr candidate_valid_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr servo_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;

@@ -50,6 +50,10 @@ public:
       "error_topic", "/brain_robot_vision/pixel_error");
     valid_topic_ = declare_parameter<std::string>(
       "valid_topic", "/brain_robot_vision/target_valid");
+    candidate_error_topic_ = declare_parameter<std::string>(
+      "candidate_error_topic", "/brain_robot_vision/color_candidate_error");
+    candidate_valid_topic_ = declare_parameter<std::string>(
+      "candidate_valid_topic", "/brain_robot_vision/color_candidate_valid");
     depth_valid_topic_ = declare_parameter<std::string>(
       "depth_valid_topic", "/brain_robot_vision/depth_valid");
     input_reliability_ = declare_parameter<std::string>("input_reliability", "reliable");
@@ -61,6 +65,9 @@ public:
     saturation_min_ = declare_parameter<int>("saturation_min", 90);
     value_min_ = declare_parameter<int>("value_min", 70);
     min_area_px_ = declare_parameter<double>("min_area_px", 350.0);
+    candidate_min_area_px_ = declare_parameter<double>("candidate_min_area_px", 40.0);
+    candidate_max_aspect_ratio_ = declare_parameter<double>(
+      "candidate_max_aspect_ratio", 4.0);
     max_area_px_ = declare_parameter<double>("max_area_px", 0.0);
     min_circularity_ = declare_parameter<double>("min_circularity", 0.0);
     min_rectangularity_ = declare_parameter<double>("min_rectangularity", 0.0);
@@ -87,6 +94,10 @@ public:
     error_publisher_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
       error_topic_, output_qos);
     valid_publisher_ = create_publisher<std_msgs::msg::Bool>(valid_topic_, output_qos);
+    candidate_error_publisher_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
+      candidate_error_topic_, output_qos);
+    candidate_valid_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      candidate_valid_topic_, output_qos);
     depth_valid_publisher_ = create_publisher<std_msgs::msg::Bool>(
       depth_valid_topic_, output_qos);
 
@@ -141,6 +152,8 @@ private:
     saturation_min_ = std::clamp(saturation_min_, 0, 255);
     value_min_ = std::clamp(value_min_, 0, 255);
     min_area_px_ = std::max(1.0, min_area_px_);
+    candidate_min_area_px_ = std::max(1.0, candidate_min_area_px_);
+    candidate_max_aspect_ratio_ = std::max(1.0, candidate_max_aspect_ratio_);
     max_area_px_ = std::max(0.0, max_area_px_);
     min_circularity_ = std::clamp(min_circularity_, 0.0, 1.0);
     min_rectangularity_ = std::clamp(min_rectangularity_, 0.0, 1.0);
@@ -186,6 +199,13 @@ private:
     std_msgs::msg::Bool message;
     message.data = valid;
     depth_valid_publisher_->publish(message);
+  }
+
+  void publish_candidate_valid(bool valid) const
+  {
+    std_msgs::msg::Bool message;
+    message.data = valid;
+    candidate_valid_publisher_->publish(message);
   }
 
   void draw_image_center(cv::Mat & image) const
@@ -350,6 +370,47 @@ private:
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(target_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
+    // Keep a color-only candidate stream for fast reacquisition. It is never
+    // used as the confirmed grasp target; shape and depth checks below still
+    // control target_valid.
+    double candidate_area = 0.0;
+    std::vector<cv::Point> candidate_contour;
+    for (const auto & contour : contours) {
+      const double area = cv::contourArea(contour);
+      const cv::Rect box = cv::boundingRect(contour);
+      const double aspect_ratio = static_cast<double>(std::max(box.width, box.height)) /
+        static_cast<double>(std::max(1, std::min(box.width, box.height)));
+      if (area >= candidate_min_area_px_ &&
+        aspect_ratio <= candidate_max_aspect_ratio_ && area > candidate_area)
+      {
+        candidate_area = area;
+        candidate_contour = contour;
+      }
+    }
+    if (!candidate_contour.empty()) {
+      const cv::Moments candidate_moments = cv::moments(candidate_contour);
+      if (std::abs(candidate_moments.m00) > 1e-6) {
+        const int candidate_x = static_cast<int>(std::lround(
+          candidate_moments.m10 / candidate_moments.m00));
+        const int candidate_y = static_cast<int>(std::lround(
+          candidate_moments.m01 / candidate_moments.m00));
+        const cv::Point image_center(debug_image.cols / 2, debug_image.rows / 2);
+        geometry_msgs::msg::Vector3Stamped candidate_message;
+        candidate_message.header = rgb_message->header;
+        candidate_message.vector.x = candidate_x - image_center.x;
+        candidate_message.vector.y = candidate_y - image_center.y;
+        candidate_message.vector.z = std::max(
+          std::abs(candidate_message.vector.x) / static_cast<double>(debug_image.cols),
+          std::abs(candidate_message.vector.y) / static_cast<double>(debug_image.rows));
+        candidate_error_publisher_->publish(candidate_message);
+        publish_candidate_valid(true);
+      } else {
+        publish_candidate_valid(false);
+      }
+    } else {
+      publish_candidate_valid(false);
+    }
+
     double largest_area = 0.0;
     double selected_rectangularity = 0.0;
     double selected_aspect_ratio = 0.0;
@@ -511,6 +572,8 @@ private:
   std::string target_size_topic_;
   std::string error_topic_;
   std::string valid_topic_;
+  std::string candidate_error_topic_;
+  std::string candidate_valid_topic_;
   std::string depth_valid_topic_;
   std::string input_reliability_;
 
@@ -522,6 +585,8 @@ private:
   int value_min_;
   int morphology_kernel_;
   double min_area_px_;
+  double candidate_min_area_px_;
+  double candidate_max_aspect_ratio_;
   double max_area_px_;
   double min_circularity_;
   double min_rectangularity_;
@@ -557,6 +622,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_size_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr error_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr valid_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr candidate_error_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr candidate_valid_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr depth_valid_publisher_;
 };
 

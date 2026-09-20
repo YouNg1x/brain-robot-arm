@@ -67,9 +67,9 @@ def generate_launch_description():
                  'emergency_stop_topic': '/brain_robot_control/emergency_stop',
                  'max_velocity_rad_s': 0.189,
                  'initial_gripper_position': 0.05,
-                 # Match the simulation search envelope: J1/J5 scan the
-                 # configured bounds while J2/J3/J4/J6 remain locked.
-                 'visual_joint_max_delta_rad': [0.98, 0.20, 0.20, 0.05, 0.95, 0.05],
+                 # Expanded real-arm J1 envelope; J1/J5 scan the configured
+                 # bounds while J2/J3/J4/J6 retain their existing limits.
+                 'visual_joint_max_delta_rad': [1.40, 0.20, 0.20, 0.05, 0.95, 0.05],
              }]),
         Node(package='brain_robot_pick_place', executable='visual_search_controller',
              name='visual_search_controller', output='screen', parameters=[
