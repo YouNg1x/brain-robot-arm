@@ -17,12 +17,12 @@ echo "[1/4] 清理 ROS 日志..."
 rm -rf "${HOME}/.ros/log"/* 2>/dev/null || true
 
 echo "[2/4] 清理超大的轮转系统日志..."
-# syslog.1/kern.log.1 are ordinary files, not systemd journals.  They have
-# previously grown to several GB because journal vacuuming does not touch
-# them.  Truncate only matching rotated files above the configured limit;
-# keep the files and permissions so rsyslog/logrotate can continue normally.
+# syslog and kern.log are ordinary rsyslog files, not systemd journals. They
+# can grow to several GB, and journal vacuuming does not touch them. Truncate
+# matching active/rotated files above the configured limit; keep the files and
+# permissions so rsyslog/logrotate can continue normally.
 sudo find /var/log -maxdepth 1 -type f \
-  \( -name 'syslog.*' -o -name 'kern.log.*' \) \
+  \( -name 'syslog*' -o -name 'kern.log*' \) \
   -size "+${ROTATED_LOG_LIMIT_MB}M" -exec sh -c '
     for log_file do
       printf "清空轮转日志：%s (%s)\n" "$log_file" "$(du -h "$log_file" | cut -f1)"

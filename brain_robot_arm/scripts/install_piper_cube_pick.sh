@@ -8,6 +8,7 @@ PIPER_WS="${PIPER_ROS_WS:-$HOME/piper_ros}"
 BASE_SOURCE="$SHARED_ROOT/piper_ws/src/brain_robot_pick_place"
 TASK_SOURCE="$SHARED_ROOT/piper_ws/src/brain_robot_ball_pick"
 START_SOURCE="$SHARED_ROOT/scripts/start_brain_robot_cube_real.sh"
+CLEAN_SOURCE="$SHARED_ROOT/scripts/clean_disk_space.sh"
 
 fail() { echo "[错误] $*" >&2; exit 1; }
 [[ -z "${CONDA_PREFIX:-}" ]] || fail "请先执行 conda deactivate。"
@@ -15,6 +16,7 @@ fail() { echo "[错误] $*" >&2; exit 1; }
 [[ -f "$PIPER_WS/install/setup.bash" ]] || fail "请先编译 ~/piper_ros。"
 [[ -f "$BASE_SOURCE/package.xml" && -f "$TASK_SOURCE/package.xml" ]] || fail "共享文件夹缺少工程源文件。"
 [[ -f "$START_SOURCE" ]] || fail "共享文件夹缺少实体紫色方块启动脚本。"
+[[ -f "$CLEAN_SOURCE" ]] || fail "共享文件夹缺少磁盘清理脚本。"
 
 mkdir -p "$APP_WS/src/brain_robot_pick_place" "$APP_WS/src/brain_robot_ball_pick"
 cp -a "$BASE_SOURCE/." "$APP_WS/src/brain_robot_pick_place/"
@@ -35,4 +37,6 @@ colcon build --symlink-install --packages-select brain_robot_pick_place brain_ro
 echo "[2/2] 安装实体紫色方块启动脚本..."
 cp "$START_SOURCE" "$HOME/start_brain_robot_cube_real.sh"
 chmod +x "$HOME/start_brain_robot_cube_real.sh"
-echo "[完成] 先启动实体相机和 PiPER 驱动，再运行：bash ~/start_brain_robot_cube_real.sh"
+cp "$CLEAN_SOURCE" "$HOME/clean_disk_space.sh"
+chmod +x "$HOME/clean_disk_space.sh"
+echo "[完成] 启动脚本和磁盘清理脚本已更新。"
