@@ -491,41 +491,43 @@ private:
       return;
     }
 
-    const auto move_group = move_group_;
-    if (!move_group) {
-      FailPrepare("MOVE_GROUP_NOT_READY");
-      return;
-    }
-
     std::map<std::string, double> target;
     for (std::size_t index = 0; index < joint_names_.size(); ++index) {
       target[joint_names_[index]] = observe_joint_positions_[index];
     }
 
-    move_group->setStartStateToCurrentState();
-    move_group->setPlanningTime(prepare_planning_time_s_);
-    move_group->setMaxVelocityScalingFactor(prepare_velocity_scaling_);
-    move_group->setMaxAccelerationScalingFactor(prepare_acceleration_scaling_);
-    if (!move_group->setJointValueTarget(target)) {
-      FailPrepare("OBSERVE_POSE_REJECTED");
-      return;
-    }
-
-    MoveGroupInterface::Plan plan;
-    const bool planned = static_cast<bool>(move_group->plan(plan));
-    if (!planned || cancel_requested_) {
-      FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_PLAN_FAILED");
-      return;
-    }
-    RCLCPP_INFO(get_logger(), "PREPARE plan succeeded with %zu points.",
-      plan.trajectory_.joint_trajectory.points.size());
-
-    if (!execute_prepare_) {
-      FailPrepare("PREPARE_PLAN_ONLY_COMPLETE");
-      return;
-    }
     if (backend_ == "piper") {
-      arm_trajectory_publisher_->publish(plan.trajectory_.joint_trajectory);
+      // The real adapter is the physical trajectory executor.  Do not block
+      // on MoveIt's planning/execution services for the fixed simulation
+      // observation pose; publish a slow, explicit current->target trajectory.
+      trajectory_msgs::msg::JointTrajectory trajectory;
+      trajectory.joint_names = joint_names_;
+      trajectory.points.resize(2);
+      double max_delta = 0.0;
+      bool missing_joint_state = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (std::size_t index = 0; index < joint_names_.size(); ++index) {
+          const auto current = CurrentJointLocked(joint_names_[index]);
+          if (!current) {
+            missing_joint_state = true;
+            break;
+          }
+          trajectory.points[0].positions.push_back(*current);
+          trajectory.points[1].positions.push_back(observe_joint_positions_[index]);
+          max_delta = std::max(max_delta,
+            std::abs(observe_joint_positions_[index] - *current));
+        }
+      }
+      if (missing_joint_state) {
+        FailPrepare("PREPARE_JOINT_STATE_MISSING");
+        return;
+      }
+      const double duration_s = std::max(20.0, max_delta / 0.02);
+      trajectory.points[0].time_from_start = rclcpp::Duration::from_seconds(0.0).to_builtin_msg();
+      trajectory.points[1].time_from_start = rclcpp::Duration::from_seconds(duration_s).to_builtin_msg();
+      arm_trajectory_publisher_->publish(trajectory);
+      RCLCPP_INFO(get_logger(), "Published direct real-arm prepare trajectory (%0.1f s).", duration_s);
       const auto deadline = SteadyClock::now() +
         std::chrono::duration<double>(prepare_execution_timeout_s_);
       bool reached = false;
@@ -552,9 +554,36 @@ private:
         FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_EXECUTION_FAILED");
         return;
       }
-    } else if (!static_cast<bool>(move_group->execute(plan)) || cancel_requested_) {
-      FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_EXECUTION_FAILED");
-      return;
+    } else {
+      const auto move_group = move_group_;
+      if (!move_group) {
+        FailPrepare("MOVE_GROUP_NOT_READY");
+        return;
+      }
+      move_group->setStartStateToCurrentState();
+      move_group->setPlanningTime(prepare_planning_time_s_);
+      move_group->setMaxVelocityScalingFactor(prepare_velocity_scaling_);
+      move_group->setMaxAccelerationScalingFactor(prepare_acceleration_scaling_);
+      if (!move_group->setJointValueTarget(target)) {
+        FailPrepare("OBSERVE_POSE_REJECTED");
+        return;
+      }
+      MoveGroupInterface::Plan plan;
+      const bool planned = static_cast<bool>(move_group->plan(plan));
+      if (!planned || cancel_requested_) {
+        FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_PLAN_FAILED");
+        return;
+      }
+      RCLCPP_INFO(get_logger(), "PREPARE plan succeeded with %zu points.",
+        plan.trajectory_.joint_trajectory.points.size());
+      if (!execute_prepare_) {
+        FailPrepare("PREPARE_PLAN_ONLY_COMPLETE");
+        return;
+      }
+      if (!static_cast<bool>(move_group->execute(plan)) || cancel_requested_) {
+        FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_EXECUTION_FAILED");
+        return;
+      }
     }
 
     if (!CallServoService(servo_start_client_, "start", true)) {
