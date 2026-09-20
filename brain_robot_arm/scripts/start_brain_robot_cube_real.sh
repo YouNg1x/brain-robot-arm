@@ -124,20 +124,25 @@ topic_exists() {
 
 start_visual_sequence() {
   echo "[启动] 使能 PiPER，并先移动到观测复位姿态..."
-  if timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
-    '{enable_request: true}' >/dev/null; then
-    if ! timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
-      std_srvs/srv/Trigger '{}' >/dev/null; then
+  local result
+  result=$(timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
+    '{enable_request: true}' 2>&1) || result=""
+  if grep -Eq 'enable_response=True' <<<"$result"; then
+    result=$(timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
+      std_srvs/srv/Trigger '{}' 2>&1) || result=""
+    if ! grep -Eq 'success=True' <<<"$result"; then
       echo "[错误] 运动门开启失败。"
       return 1
     fi
-    if ! timeout 5s ros2 service call /piper_jog_adapter/arm \
-      std_srvs/srv/Trigger '{}' >/dev/null; then
+    result=$(timeout 5s ros2 service call /piper_jog_adapter/arm \
+      std_srvs/srv/Trigger '{}' 2>&1) || result=""
+    if ! grep -Eq 'success=True' <<<"$result"; then
       echo "[错误] 适配器 arm 失败。"
       return 1
     fi
-    if ! timeout 8s ros2 service call /visual_search_controller/start \
-      std_srvs/srv/Trigger '{}' >/dev/null; then
+    result=$(timeout 8s ros2 service call /visual_search_controller/start \
+      std_srvs/srv/Trigger '{}' 2>&1) || result=""
+    if ! grep -Eq 'success=True' <<<"$result"; then
       echo "[错误] 视觉复位/搜索启动失败。"
       return 1
     fi
