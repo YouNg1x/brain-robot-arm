@@ -114,7 +114,7 @@ start_group ros2 run image_view image_view --ros-args -r image:=/brain_robot_vis
 echo "[7/7] 全部组件已就绪。"
 echo
 echo "操作顺序：确认工作区安全后，按 1 开启运动门，按 2 使能 PiPER 和适配器，按 3 开始搜寻。"
-echo "目标进入 GRASP_READY 后，确认夹爪附近无障碍再按 6 执行抓取；按 4 停止，按 5 失能适配器，按 0 退出。"
+echo "目标进入 GRASP_READY 后将自动执行抓取；按 6 可在停止后手动重试，按 4 停止，按 5 失能适配器，按 0 退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in

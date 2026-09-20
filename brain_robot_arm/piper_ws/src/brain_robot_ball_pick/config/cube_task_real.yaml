@@ -60,14 +60,16 @@ visual_search_controller:
 
 grasp_lift_executor:
   ros__parameters:
-    # Real execution is available only through the explicit execute service/key 6.
+    # Real execution starts automatically when the visual controller reaches
+    # GRASP_READY. The execute service/key 6 remains available for a manual
+    # retry after a stopped sequence.
     simulation_only: false
     real_grasp_enabled: true
-    auto_execute: false
+    auto_execute: true
     gripper_open_value: 50000
     gripper_close_value: 40000
     gripper_settle_s: 2.0
-    prepare_on_grasp_ready: false
+    prepare_on_grasp_ready: true
     top_down_grasp_enabled: false
     diagonal_side_grasp_enabled: false
     use_sim_time: false
