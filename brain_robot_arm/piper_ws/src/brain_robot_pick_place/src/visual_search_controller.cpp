@@ -143,6 +143,8 @@ private:
       "joint_names", {"joint1", "joint2", "joint3", "joint4", "joint5", "joint6"});
     observe_joint_positions_ = ParameterOr<std::vector<double>>(
       "observe_joint_positions", {0.0, 0.98, -0.75, 0.0, 0.30, 0.0});
+    reset_joint_positions_ = ParameterOr<std::vector<double>>(
+      "reset_joint_positions", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     horizontal_joint_ = ParameterOr<std::string>("horizontal_joint", "joint1");
     vertical_joint_ = ParameterOr<std::string>("vertical_joint", "joint5");
     alignment_assist_enabled_ = ParameterOr<bool>("alignment_assist_enabled", false);
@@ -386,6 +388,7 @@ private:
       {
         {
           std::lock_guard<std::mutex> lock(mutex_);
+          reset_requested_ = false;
           StopLocked(ControlState::STOPPED, "USER_STOP");
         }
         cancel_requested_ = true;
@@ -394,6 +397,30 @@ private:
         }
         response->success = true;
         response->message = "Visual motion stopped.";
+      });
+    reset_service_ = create_service<std_srvs::srv::Trigger>(
+      "~/reset",
+      [this](
+        const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response)
+      {
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (!configuration_ok_ || !move_group_ || !real_motion_enabled_ ||
+            !JointStateFreshLocked()) {
+            response->success = false;
+            response->message = "Controller is not ready for reset.";
+            return;
+          }
+          cancel_requested_ = false;
+          reset_requested_ = true;
+          target_valid_frames_ = 0;
+          aligned_frames_ = 0;
+          SetStateLocked(ControlState::PREPARE, "RESET_AUTHORIZED");
+        }
+        LaunchPrepareWorker();
+        response->success = true;
+        response->message = "Zero reset started; the arm will stop at all joint angles 0 rad.";
       });
 
     const auto control_period = std::chrono::duration<double>(1.0 / control_rate_hz_);
@@ -405,9 +432,11 @@ private:
   void ValidateParameters()
   {
     configuration_ok_ = true;
-    if (joint_names_.size() != observe_joint_positions_.size() || joint_names_.empty()) {
+    if (joint_names_.size() != observe_joint_positions_.size() ||
+      joint_names_.size() != reset_joint_positions_.size() || joint_names_.empty()) {
       RCLCPP_ERROR(
-        get_logger(), "joint_names and observe_joint_positions must have equal non-zero length.");
+        get_logger(),
+        "joint_names, observe_joint_positions and reset_joint_positions must have equal non-zero length.");
       configuration_ok_ = false;
     }
     const auto contains_joint = [this](const std::string & name) {
@@ -571,9 +600,16 @@ private:
       return;
     }
 
+    bool zero_reset = false;
+    std::vector<double> prepare_positions;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      zero_reset = reset_requested_;
+      prepare_positions = zero_reset ? reset_joint_positions_ : observe_joint_positions_;
+    }
     std::map<std::string, double> target;
     for (std::size_t index = 0; index < joint_names_.size(); ++index) {
-      target[joint_names_[index]] = observe_joint_positions_[index];
+      target[joint_names_[index]] = prepare_positions[index];
     }
 
     if (backend_ == "piper") {
@@ -594,9 +630,9 @@ private:
             break;
           }
           trajectory.points[0].positions.push_back(*current);
-          trajectory.points[1].positions.push_back(observe_joint_positions_[index]);
+          trajectory.points[1].positions.push_back(prepare_positions[index]);
           max_delta = std::max(max_delta,
-            std::abs(observe_joint_positions_[index] - *current));
+            std::abs(prepare_positions[index] - *current));
         }
       }
       if (missing_joint_state) {
@@ -628,7 +664,7 @@ private:
           reached = true;
           for (std::size_t index = 0; index < joint_names_.size(); ++index) {
             const auto current = CurrentJointLocked(joint_names_[index]);
-            if (!current || std::abs(*current - observe_joint_positions_[index]) >
+            if (!current || std::abs(*current - prepare_positions[index]) >
               joint_position_tolerance_)
             {
               reached = false;
@@ -643,6 +679,12 @@ private:
       }
       if (!reached || cancel_requested_) {
         FailPrepare(cancel_requested_ ? "PREPARE_CANCELLED" : "PREPARE_EXECUTION_FAILED");
+        return;
+      }
+      if (zero_reset) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        reset_requested_ = false;
+        SetStateLocked(ControlState::STOPPED, "RESET_COMPLETE");
         return;
       }
     } else {
@@ -1520,6 +1562,7 @@ private:
   bool skip_prepare_{false};
   std::vector<std::string> joint_names_;
   std::vector<double> observe_joint_positions_;
+  std::vector<double> reset_joint_positions_;
   std::string horizontal_joint_;
   std::string vertical_joint_;
   bool alignment_assist_enabled_{false};
@@ -1608,6 +1651,7 @@ private:
   bool target_valid_{false};
   bool candidate_valid_{false};
   bool candidate_only_alignment_{false};
+  bool reset_requested_{false};
   double error_x_px_{0.0};
   double error_y_px_{0.0};
   double target_error_ratio_{1.0};
@@ -1650,6 +1694,7 @@ private:
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

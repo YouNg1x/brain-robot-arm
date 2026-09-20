@@ -63,7 +63,7 @@
 - 一键脚本现在把驱动、相机、检测器、视觉栈和调试窗口输出写入 `~/brain_robot_logs/`，不再把高频日志刷满启动终端；启动时会清理超过 3 天或单个超过 100 MB 的应用日志。`~/clean_disk_space.sh` 也会执行同样的应用日志清理。
 - 2026-09-20 已在实体机完成关键链路验证：一键启动后按 `1、2、3`，控制器发布约 49 秒的复位轨迹，适配器成功接收并持续输出 `/joint_commands` 约 50 Hz，机械臂已实际进入自动搜寻模式。
 - 同次验证发现并修复适配器在轨迹回调中使用 ROS 2 Python 日志位置参数导致的 `TypeError`；修复提交为 `4d3ce03`。此前该异常会使适配器退出，表现为有轨迹发布但没有 `/joint_commands`。
-- 当前一键脚本按键为：`1` 重新执行“复位→搜寻→居中”，`2` 在 `GRASP_READY` 后执行抓取，`0` 停止视觉与 Servo 但保持 PiPER 使能，`Ctrl+C` 才执行失能并退出。
+- 当前一键脚本按键为：`1` 重新执行“观测姿态复位→搜寻→居中”，`2` 在 `GRASP_READY` 后执行抓取，`0` 立即执行六轴零点复位并在零点停住，`Ctrl+C` 才执行失能并退出。
 
 ## 当前代码架构
 
@@ -113,7 +113,7 @@ ALIGN
 
 因此复位后看到天花板或暂时看不到方块并不意味着流程失败；只要已经进入 `SEARCH`，控制器就会按仿真红球的 J1/J5 搜索策略寻找目标。只有在搜索边界完成并发布 `FULL_SEARCH_COMPLETE_NO_TARGET` 后，才需要检查相机视野、目标摆放和复位姿态。
 
-实体驱动还有一层独立于视觉运动门的 ROS 内部使能状态：`/piper_jog_adapter` 的 `enable_motion`/`arm` 只控制保护适配器。启动阶段会先调用 `/enable_srv` 使能 `piper_ctrl_single_node`，成功后才 arm 保护适配器；按键 `2` 只触发抓取。
+实体驱动还有一层独立于视觉运动门的 ROS 内部使能状态：`/piper_jog_adapter` 的 `enable_motion`/`arm` 只控制保护适配器。启动阶段会先调用 `/enable_srv` 使能 `piper_ctrl_single_node`，成功后才 arm 保护适配器；按键 `2` 只触发抓取，按键 `0` 调用视觉控制器的零点复位服务。
 
 因此，目标已经居中时没有明显关节运动、或 `/joint_commands` 在控制器停止输出后不再持续发布，可能是当前设计行为，而不自动表示故障。
 
@@ -181,7 +181,7 @@ ALIGN
 1. 抓取执行器新增显式 `/grasp_lift_executor/execute` 服务；只有当前视觉状态为 `GRASP_READY` 且真机抓取授权参数开启时才启动。
 2. 真机轨迹通过 `/brain_robot_grasp/arm_trajectory` 交给 `piper_jog_adapter`，不再调用被禁用的 MoveIt 实体 `execute()`。
 3. 真机夹爪通过 `/brain_robot_grasp/gripper_command` 复用 `auto_sequence_speed50.py` 中的 `50000` 张开、`40000` 收紧值。
-4. 一键脚本现在只保留数字键 `1` 和 `2`：`1` 一键使能并启动完整自动抓取；`2` 停止当前视觉/Servo 运动但保持 PiPER 和适配器使能；`0` 退出并完整关闭。
+4. 一键脚本使用数字键 `1`、`2`、`0`：`1` 重新执行观测姿态复位并启动搜寻/居中；`2` 在 `GRASP_READY` 后执行抓取；`0` 停止视觉/Servo 后将六轴目标设为 `0 rad`，完成零点复位后停住；`Ctrl+C` 退出并完整关闭。
 
 这些改动已完成源码级检查；真机抓取仍未完成最终验收。最近一轮实机 TF 输出已证明机器人反馈正常，但相机挂载 TF 在修复前仍断链；修复提交后必须重新编译、重启并再次查询完整链路。
 
@@ -242,7 +242,7 @@ bash ~/start_brain_robot_cube_real.sh
 ```text
 1  重新使能、复位、自动搜寻并居中
 2  仅在 `GRASP_READY` 后执行抓取
-0  停止视觉/Servo 运动，但保持 PiPER 和适配器使能
+0  立即执行六轴零点复位，复位完成后停住
 Ctrl+C 失能 PiPER、关闭运动门并退出
 ```
 
@@ -259,4 +259,6 @@ timeout 8s ros2 run tf2_ros tf2_echo \
   gripper_base camera_color_optical_frame
 ```
 
-必须持续输出变换，且不能出现 `two or more unconnected trees`。同时检测窗口应显示紫色方块，状态话题应为 `GRASP_READY`。如果需要立即停止当前运动，按 `2`；它不会失能 PiPER。
+必须持续输出变换，且不能出现 `two or more unconnected trees`。同时检测窗口应显示紫色方块，状态话题应为 `GRASP_READY`。按 `0` 会停止当前视觉控制并执行六轴零点复位，不会执行抓取；`Ctrl+C` 才会失能 PiPER 并退出。
+
+这里的“零点复位”是软件关节目标复位：控制器向 `joint1`～`joint6` 发布目标位置 `[0, 0, 0, 0, 0, 0] rad`，通过实体适配器和 PiPER 驱动执行。它不是重新标定编码器零点，也不是厂商硬件回零；请求会立即开始，但机械臂仍按限速轨迹逐步运动到零点。

@@ -181,6 +181,22 @@ stop_motion_hold_enabled() {
     std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
 }
 
+reset_zero_sequence() {
+  echo "[复位] 停止当前视觉运动，立即开始六轴零点复位..."
+  timeout 5s ros2 service call /visual_search_controller/stop \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  timeout 5s ros2 service call /servo_node/stop_servo \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  local result
+  result=$(timeout 8s ros2 service call /visual_search_controller/reset \
+    std_srvs/srv/Trigger '{}' 2>&1) || result=""
+  echo "$result"
+  if ! grep -Eq 'success=True' <<<"$result"; then
+    echo "[复位] 零点复位请求失败。"
+    return 1
+  fi
+}
+
 echo "=================================================="
 echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
@@ -224,6 +240,7 @@ wait_for node /servo_node
 wait_for node /piper_jog_adapter
 wait_for node /grasp_lift_executor
 wait_for service /piper_jog_adapter/arm
+wait_for service /visual_search_controller/reset
 wait_for service /grasp_lift_executor/execute
 
 echo "[5/7] 检查完整 MoveIt 反馈..."
@@ -233,7 +250,7 @@ start_group debug_image_view ros2 run image_view image_view --ros-args -r image:
 echo "[7/7] 全部组件已就绪。"
 start_visual_sequence
 echo
-echo "操作：1=复位并搜索/对齐；2=GRASP_READY 后抓取；0=停止但保持使能；Ctrl+C=失能并退出。"
+echo "操作：1=观测姿态复位后搜索/对齐；2=GRASP_READY 后抓取；0=立即零点复位；Ctrl+C=失能并退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
@@ -244,7 +261,7 @@ while true; do
         execute_grasp_sequence
         ;;
       0)
-        stop_motion_hold_enabled
+        reset_zero_sequence
         ;;
     esac
   fi

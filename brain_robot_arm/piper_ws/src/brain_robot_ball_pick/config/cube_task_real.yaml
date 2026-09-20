@@ -13,6 +13,7 @@ visual_search_controller:
     use_sim_time: false
     joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     observe_joint_positions: [0.0, 0.98, -0.75, 0.0, 0.30, 0.0]
+    reset_joint_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     horizontal_joint: joint1
     vertical_joint: joint5
     alignment_assist_enabled: true
