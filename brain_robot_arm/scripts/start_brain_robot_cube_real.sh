@@ -161,6 +161,26 @@ restart_visual_sequence() {
   start_visual_sequence
 }
 
+execute_grasp_sequence() {
+  echo "[抓取] 请求抓取；当前状态必须为 GRASP_READY..."
+  local result
+  result=$(timeout 10s ros2 service call /grasp_lift_executor/execute \
+    std_srvs/srv/Trigger '{}' 2>&1) || result=""
+  echo "$result"
+  if ! grep -Eq 'success=True' <<<"$result"; then
+    echo "[抓取] 未启动：请确认视觉状态已经进入 GRASP_READY。"
+    return 1
+  fi
+}
+
+stop_motion_hold_enabled() {
+  echo "[停止] 停止视觉和 Servo，保持 PiPER 使能与当前位置..."
+  timeout 5s ros2 service call /visual_search_controller/stop \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  timeout 5s ros2 service call /servo_node/stop_servo \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+}
+
 echo "=================================================="
 echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
@@ -213,7 +233,7 @@ start_group debug_image_view ros2 run image_view image_view --ros-args -r image:
 echo "[7/7] 全部组件已就绪。"
 start_visual_sequence
 echo
-echo "操作：启动后已自动复位并搜索；按 1 重新启动搜索；按 2 紧急停止当前运动（保持 PiPER 和适配器使能）；按 0 退出。"
+echo "操作：1=复位并搜索/对齐；2=GRASP_READY 后抓取；0=停止但保持使能；Ctrl+C=失能并退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
@@ -221,11 +241,11 @@ while true; do
         restart_visual_sequence
         ;;
       2)
-        echo "[急停] 停止视觉和 Servo 输出，保持实体使能与当前位置..."
-        timeout 5s ros2 service call /visual_search_controller/stop std_srvs/srv/Trigger '{}' || true
-        timeout 5s ros2 service call /servo_node/stop_servo std_srvs/srv/Trigger '{}' || true
+        execute_grasp_sequence
         ;;
-      0) exit 0 ;;
+      0)
+        stop_motion_hold_enabled
+        ;;
     esac
   fi
 done

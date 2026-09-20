@@ -78,7 +78,7 @@ grasp_lift_executor:
     # retry after a stopped sequence.
     simulation_only: false
     real_grasp_enabled: true
-    auto_execute: true
+    auto_execute: false
     gripper_open_value: 50000
     gripper_close_value: 40000
     gripper_settle_s: 2.0

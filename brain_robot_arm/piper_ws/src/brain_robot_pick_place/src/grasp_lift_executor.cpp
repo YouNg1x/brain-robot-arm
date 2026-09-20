@@ -339,6 +339,9 @@ private:
       return;
     }
     if (visual_state == "GRASP_READY") {
+      if (!auto_execute_) {
+        return;
+      }
       bool start_worker = false;
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
