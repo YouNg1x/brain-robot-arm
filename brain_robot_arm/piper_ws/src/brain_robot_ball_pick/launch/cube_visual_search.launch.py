@@ -16,7 +16,8 @@ def generate_launch_description():
     cube_share = get_package_share_directory('brain_robot_ball_pick')
     base_share = get_package_share_directory('brain_robot_pick_place')
     moveit = MoveItConfigsBuilder(
-        'piper', package_name='piper_with_gripper_moveit').to_moveit_configs()
+        'piper', package_name='piper_with_gripper_moveit').sensors_3d(
+            os.path.join(cube_share, 'config', 'sensors_3d_real.yaml')).to_moveit_configs()
     servo_params = {'moveit_servo': _load_yaml(
         os.path.join(base_share, 'config', 'piper_servo_real.yaml'))}
     move_group_params = [
@@ -33,6 +34,10 @@ def generate_launch_description():
             'publish_transforms_updates': True,
             'monitor_dynamics': False,
             'use_sim_time': False,
+            # Keep the depth-camera occupancy map in the robot base frame so
+            # MoveIt can check candidate grasp paths against the environment.
+            'octomap_frame': 'base_link',
+            'octomap_resolution': 0.02,
         },
     ]
     robot_state_publisher = Node(
