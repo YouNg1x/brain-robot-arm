@@ -15,6 +15,14 @@ visual_search_controller:
     observe_joint_positions: [0.0, 0.98, -0.75, 0.0, 0.30, 0.0]
     horizontal_joint: joint1
     vertical_joint: joint5
+    alignment_assist_enabled: true
+    alignment_assist_horizontal_joint: joint2
+    alignment_assist_vertical_joint: joint3
+    alignment_assist_horizontal_ratio: 0.20
+    alignment_assist_vertical_ratio: 0.20
+    alignment_assist_horizontal_sign: 1.0
+    alignment_assist_vertical_sign: 1.0
+    alignment_assist_speed_limit: 0.03
     horizon_joint_names: [joint4, joint6]
     horizon_lock_positions: [0.0, 0.0]
     horizontal_error_sign: -1.0

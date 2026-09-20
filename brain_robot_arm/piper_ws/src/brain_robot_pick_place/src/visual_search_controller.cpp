@@ -143,6 +143,11 @@ private:
       "observe_joint_positions", {0.0, 0.98, -0.75, 0.0, 0.30, 0.0});
     horizontal_joint_ = ParameterOr<std::string>("horizontal_joint", "joint1");
     vertical_joint_ = ParameterOr<std::string>("vertical_joint", "joint5");
+    alignment_assist_enabled_ = ParameterOr<bool>("alignment_assist_enabled", false);
+    alignment_assist_horizontal_joint_ = ParameterOr<std::string>(
+      "alignment_assist_horizontal_joint", "joint2");
+    alignment_assist_vertical_joint_ = ParameterOr<std::string>(
+      "alignment_assist_vertical_joint", "joint3");
     horizon_joint_names_ = ParameterOr<std::vector<std::string>>(
       "horizon_joint_names", {"joint4", "joint6"});
     horizon_lock_positions_ = ParameterOr<std::vector<double>>(
@@ -194,6 +199,16 @@ private:
     horizontal_kp_ = ParameterOr<double>("horizontal_kp", 0.0008);
     vertical_kp_ = ParameterOr<double>("vertical_kp", 0.0008);
     align_joint_speed_limit_ = ParameterOr<double>("align_joint_speed_limit", 0.08);
+    alignment_assist_horizontal_ratio_ = ParameterOr<double>(
+      "alignment_assist_horizontal_ratio", 0.20);
+    alignment_assist_vertical_ratio_ = ParameterOr<double>(
+      "alignment_assist_vertical_ratio", 0.20);
+    alignment_assist_horizontal_sign_ = ParameterOr<double>(
+      "alignment_assist_horizontal_sign", 1.0);
+    alignment_assist_vertical_sign_ = ParameterOr<double>(
+      "alignment_assist_vertical_sign", 1.0);
+    alignment_assist_speed_limit_ = ParameterOr<double>(
+      "alignment_assist_speed_limit", 0.03);
     horizon_lock_kp_ = ParameterOr<double>("horizon_lock_kp", 1.0);
     horizon_lock_speed_limit_ = ParameterOr<double>("horizon_lock_speed_limit", 0.05);
     horizon_lock_tolerance_ = ParameterOr<double>("horizon_lock_tolerance", 0.02);
@@ -395,6 +410,18 @@ private:
       controlled_joints.end())
     {
       RCLCPP_ERROR(get_logger(), "Horizontal, vertical and horizon-lock joints must be distinct.");
+      configuration_ok_ = false;
+    }
+    if (alignment_assist_enabled_ &&
+      (alignment_assist_horizontal_joint_ == alignment_assist_vertical_joint_ ||
+      alignment_assist_horizontal_joint_ == horizontal_joint_ ||
+      alignment_assist_horizontal_joint_ == vertical_joint_ ||
+      alignment_assist_vertical_joint_ == horizontal_joint_ ||
+      alignment_assist_vertical_joint_ == vertical_joint_ ||
+      alignment_assist_horizontal_ratio_ < 0.0 || alignment_assist_vertical_ratio_ < 0.0 ||
+      alignment_assist_speed_limit_ <= 0.0))
+    {
+      RCLCPP_ERROR(get_logger(), "Alignment-assist joint mapping or speed is invalid.");
       configuration_ok_ = false;
     }
     if (level_joint2_name_ == level_joint3_name_ || level_joint2_name_ == horizontal_joint_ ||
@@ -920,7 +947,7 @@ private:
     const double vertical_velocity = std::clamp(
       vertical_error_sign_ * vertical_kp_ * error_y_px_,
       -align_joint_speed_limit_, align_joint_speed_limit_);
-    PublishJointLocked(horizontal_velocity, vertical_velocity);
+    PublishAlignmentJointLocked(horizontal_velocity, vertical_velocity);
 
     if (aligned_frames_ >= align_stable_frames_) {
       if (direct_grasp_after_align_) {
@@ -1180,6 +1207,35 @@ private:
     PublishForwardAllowedLocked(false);
   }
 
+  void PublishAlignmentJointLocked(double horizontal_velocity, double vertical_velocity)
+  {
+    if (!alignment_assist_enabled_) {
+      PublishJointLocked(horizontal_velocity, vertical_velocity);
+      return;
+    }
+    control_msgs::msg::JointJog command;
+    command.header.stamp = now();
+    command.joint_names = {
+      horizontal_joint_, vertical_joint_, alignment_assist_horizontal_joint_,
+      alignment_assist_vertical_joint_};
+    command.velocities = {
+      horizontal_velocity, vertical_velocity,
+      std::clamp(
+        alignment_assist_horizontal_sign_ * alignment_assist_horizontal_ratio_ *
+        horizontal_velocity, -alignment_assist_speed_limit_, alignment_assist_speed_limit_),
+      std::clamp(
+        alignment_assist_vertical_sign_ * alignment_assist_vertical_ratio_ * vertical_velocity,
+        -alignment_assist_speed_limit_, alignment_assist_speed_limit_)};
+    const std::size_t lock_count = std::min(
+      horizon_joint_names_.size(), horizon_lock_positions_.size());
+    for (std::size_t index = 0; index < lock_count; ++index) {
+      command.joint_names.push_back(horizon_joint_names_[index]);
+      command.velocities.push_back(HorizonLockVelocityLocked(index));
+    }
+    joint_command_publisher_->publish(command);
+    PublishForwardAllowedLocked(false);
+  }
+
   void PublishLevelJointLocked(
     double horizontal_velocity, double vertical_velocity,
     double joint2_velocity, double joint3_velocity)
@@ -1335,6 +1391,9 @@ private:
   std::vector<double> observe_joint_positions_;
   std::string horizontal_joint_;
   std::string vertical_joint_;
+  bool alignment_assist_enabled_{false};
+  std::string alignment_assist_horizontal_joint_;
+  std::string alignment_assist_vertical_joint_;
   std::vector<std::string> horizon_joint_names_;
   std::vector<double> horizon_lock_positions_;
   bool level_align_enabled_{false};
@@ -1378,6 +1437,11 @@ private:
   double horizontal_kp_{0.0008};
   double vertical_kp_{0.0008};
   double align_joint_speed_limit_{0.08};
+  double alignment_assist_horizontal_ratio_{0.20};
+  double alignment_assist_vertical_ratio_{0.20};
+  double alignment_assist_horizontal_sign_{1.0};
+  double alignment_assist_vertical_sign_{1.0};
+  double alignment_assist_speed_limit_{0.03};
   double horizon_lock_kp_{1.0};
   double horizon_lock_speed_limit_{0.05};
   double horizon_lock_tolerance_{0.02};
