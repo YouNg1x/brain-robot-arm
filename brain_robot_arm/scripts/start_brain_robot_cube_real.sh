@@ -11,17 +11,22 @@ LOG_MAX_MB="${BRAIN_ROBOT_LOG_MAX_MB:-20}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-45}"
 PIDS=()
 LOG_GUARD_PID=""
+DISABLE_REQUESTED=0
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() { echo "[错误] $*" >&2; exit 1; }
 cleanup() {
   trap - EXIT INT TERM
-  echo; echo "[关闭] 先关闭实体运动门..."
-  timeout 5s ros2 service call /visual_search_controller/stop std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
-  timeout 5s ros2 service call /piper_jog_adapter/disarm std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
-  timeout 5s ros2 service call /piper_jog_adapter/disable_motion std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
-  timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
-    '{enable_request: false}' >/dev/null 2>&1 || true
+  if (( DISABLE_REQUESTED )); then
+    echo; echo "[关闭] Ctrl+C 已请求，关闭实体运动门并失能 PiPER..."
+    timeout 5s ros2 service call /visual_search_controller/stop std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+    timeout 5s ros2 service call /piper_jog_adapter/disarm std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+    timeout 5s ros2 service call /piper_jog_adapter/disable_motion std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+    timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
+      '{enable_request: false}' >/dev/null 2>&1 || true
+  else
+    echo; echo "[保持] 未收到 Ctrl+C；不发送 PiPER 失能命令。"
+  fi
   echo "[关闭] 停止本脚本启动的视觉、相机和驱动进程..."
   for pid in "${PIDS[@]:-}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   sleep 1
@@ -30,10 +35,10 @@ cleanup() {
     kill "$LOG_GUARD_PID" 2>/dev/null || true
   fi
   wait 2>/dev/null || true
-  echo "[完成] 一键流程已停止；运动门已关闭。"
+  echo "[完成] 一键流程已停止。"
 }
 trap cleanup EXIT
-trap 'exit 130' INT
+trap 'DISABLE_REQUESTED=1; exit 130' INT
 trap 'exit 143' TERM
 if [[ -n "${CONDA_PREFIX:-}" ]] && command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
@@ -203,6 +208,10 @@ execute_grasp_sequence() {
     std_srvs/srv/Trigger '{}' 2>&1) || result=""
   echo "$result"
   if ! grep -Eq 'success=True' <<<"$result"; then
+    if grep -Fq 'already running' <<<"$result"; then
+      echo "[抓取] 抓取序列已在运行；保持当前使能和当前流程。"
+      return 0
+    fi
     echo "[抓取] 未启动：请确认视觉状态已经进入 GRASP_READY。"
     return 1
   fi
@@ -283,13 +292,19 @@ while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
       1)
-        restart_visual_sequence
+        if ! restart_visual_sequence; then
+          echo "[保持] 搜索启动失败；PiPER 保持当前使能状态。"
+        fi
         ;;
       2)
-        execute_grasp_sequence
+        if ! execute_grasp_sequence; then
+          echo "[保持] 抓取请求未被接受；PiPER 保持当前使能状态。"
+        fi
         ;;
       0)
-        reset_zero_sequence
+        if ! reset_zero_sequence; then
+          echo "[保持] 零点复位请求失败；PiPER 保持当前使能状态。"
+        fi
         ;;
     esac
   fi

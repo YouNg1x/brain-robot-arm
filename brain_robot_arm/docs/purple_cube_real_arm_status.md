@@ -250,6 +250,8 @@ bash ~/start_brain_robot_cube_real.sh
 Ctrl+C 失能 PiPER、关闭运动门并退出
 ```
 
+按 `2` 时若服务返回 `A grasp sequence is already running.`，表示前一次抓取线程仍在执行；脚本只提示该状态并保持当前使能，不会退出或调用 `/enable_srv false`。同样，按键 `1`、`2`、`0` 的请求失败只保留当前状态；仅 Ctrl+C 会触发一键脚本的 PiPER 失能清理。
+
 ### 4. 自动抓取前的最低验证
 
 自动流程进入 `GRASP_READY` 前，另开终端执行：
