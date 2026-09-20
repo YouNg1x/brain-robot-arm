@@ -205,7 +205,7 @@ timeout 8s ros2 service call \
   "{enable_request: true}"
 ```
 
-必须返回 `enable_response: true`。手动启动时，完成实体使能后再调用适配器的 `enable_motion` 和 `arm`。一键脚本则按 `1`、`2`、`3` 操作，其中 `2` 已包含这三步。停止时先按 `4`、`5`，再按 `0`；退出清理会再次尝试关闭实体使能。
+必须返回 `enable_response: true`。手动启动时，完成实体使能后再调用适配器的 `enable_motion` 和 `arm`。一键脚本按 `1` 自动完成这三步并启动视觉流程；按 `2` 只停止视觉和 Servo，不调用 `disarm` 或 `/enable_srv false`；按 `0` 退出时才执行完整关闭。
 
 ## 可直接执行的真机启动流程
 
