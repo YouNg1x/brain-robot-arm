@@ -25,7 +25,7 @@ sudo find /var/log -maxdepth 1 -type f \
   \( -name 'syslog.*' -o -name 'kern.log.*' \) \
   -size "+${ROTATED_LOG_LIMIT_MB}M" -exec sh -c '
     for log_file do
-      printf "清空轮转日志：%s (%s)\\n" "$log_file" "$(du -h "$log_file" | cut -f1)"
+      printf "清空轮转日志：%s (%s)\n" "$log_file" "$(du -h "$log_file" | cut -f1)"
       truncate -s 0 "$log_file"
     done
   ' sh {} +
