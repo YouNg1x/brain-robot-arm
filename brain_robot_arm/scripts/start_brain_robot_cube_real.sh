@@ -17,6 +17,8 @@ cleanup() {
   timeout 5s ros2 service call /visual_search_controller/stop std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
   timeout 5s ros2 service call /piper_jog_adapter/disarm std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
   timeout 5s ros2 service call /piper_jog_adapter/disable_motion std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
+    '{enable_request: false}' >/dev/null 2>&1 || true
   echo "[关闭] 停止本脚本启动的视觉、相机和驱动进程..."
   for pid in "${PIDS[@]:-}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   sleep 1
@@ -81,6 +83,7 @@ else
   echo "[复用] 已检测到 /piper_ctrl_single_node"
 fi
 wait_for topic /joint_states
+wait_for service /enable_srv
 
 echo "[2/7] 检查并启动 RGB-D 相机..."
 if ! node_exists /camera/camera; then
@@ -110,13 +113,22 @@ echo "[6/7] 打开识别窗口..."
 start_group ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
 echo "[7/7] 全部组件已就绪。"
 echo
-echo "操作顺序：确认工作区安全后，按 1 开启运动门，按 2 使能适配器，按 3 开始搜寻。"
+echo "操作顺序：确认工作区安全后，按 1 开启运动门，按 2 使能 PiPER 和适配器，按 3 开始搜寻。"
 echo "目标进入 GRASP_READY 后，确认夹爪附近无障碍再按 6 执行抓取；按 4 停止，按 5 失能适配器，按 0 退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
       1) timeout 5s ros2 service call /piper_jog_adapter/enable_motion std_srvs/srv/Trigger '{}' || true ;;
-      2) timeout 5s ros2 service call /piper_jog_adapter/arm std_srvs/srv/Trigger '{}' || true ;;
+      2)
+        echo "[使能] 正在使能 PiPER 实体驱动..."
+        if timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
+          '{enable_request: true}'; then
+          timeout 5s ros2 service call /piper_jog_adapter/enable_motion std_srvs/srv/Trigger '{}' || true
+          timeout 5s ros2 service call /piper_jog_adapter/arm std_srvs/srv/Trigger '{}' || true
+        else
+          echo "[错误] PiPER 实体使能失败，未 arm 适配器。"
+        fi
+        ;;
       3) timeout 8s ros2 service call /visual_search_controller/start std_srvs/srv/Trigger '{}' || true ;;
       4) timeout 5s ros2 service call /visual_search_controller/stop std_srvs/srv/Trigger '{}' || true ;;
       5) timeout 5s ros2 service call /piper_jog_adapter/disarm std_srvs/srv/Trigger '{}' || true ;;

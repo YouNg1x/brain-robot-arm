@@ -87,7 +87,24 @@ start_brain_robot_cube_real.sh
 
 真实紫色方块配置处于保护模式。视觉控制开始后，目标偏离中心时应产生低速 Servo 修正；目标满足居中门槛后，控制器会进入 `DIRECT_VISUAL_ALIGN_ACQUIRED` 或 `GRASP_READY` 并停止持续修正。
 
-实体驱动还有一层独立于视觉运动门的 ROS 内部使能状态：`/piper_jog_adapter` 的 `enable_motion`/`arm` 只控制保护适配器，不能替代 `/enable_srv` 对 `piper_ctrl_single_node` 的使能。未调用 `/enable_srv` 时，`/joint_commands` 仍可有数据，但驱动回调不会调用 `JointCtrl()`，实体机械臂不会运动。
+### 实体任务的正确状态流程
+
+每次启动实体流程后，操作者不需要先把方块放到画面中心。按键 `3` 会先执行仿真红球已经验证过的固定复位/观测姿态：
+
+```text
+PREPARE
+  -> [0.0, 0.98, -0.75, 0.0, 0.30, 0.0]
+SEARCH
+  -> 画面暂时没有紫色方块时自动搜索
+ALIGN
+  -> 方块进入视野后自动居中
+GRASP_READY
+  -> 只有按键 6 才执行一次抓取
+```
+
+因此复位后看到天花板或暂时看不到方块并不意味着流程失败；只要已经进入 `SEARCH`，控制器就会按仿真红球的 J1/J5 搜索策略寻找目标。只有在搜索边界完成并发布 `FULL_SEARCH_COMPLETE_NO_TARGET` 后，才需要检查相机视野、目标摆放和复位姿态。
+
+实体驱动还有一层独立于视觉运动门的 ROS 内部使能状态：`/piper_jog_adapter` 的 `enable_motion`/`arm` 只控制保护适配器。现在一键脚本的按键 `2` 会先调用 `/enable_srv` 使能 `piper_ctrl_single_node`，成功后才 arm 保护适配器；这样不会再出现“适配器已 arm、`/joint_commands` 有数据、但实体驱动未使能”的混淆状态。
 
 因此，目标已经居中时没有明显关节运动、或 `/joint_commands` 在控制器停止输出后不再持续发布，可能是当前设计行为，而不自动表示故障。
 
@@ -110,6 +127,14 @@ start_brain_robot_cube_real.sh
 - OrbbecViewer 与 Astra ROS 驱动不能同时占用相机。
 - USB 连接不稳定曾造成相机节点无法找到 UVC 彩色设备。
 - CAN 适配器或机械臂连接松动曾造成 `can0 is loss`、无反馈或无 CAN 报文；这属于硬件/接口状态，不应误判为视觉或 Servo 算法故障。
+
+### 本次 CAN/启动故障的处理方法
+
+- `SendCanMessage(SEND_MESSAGE_FAILED (100017))` 和 `can0 is loss` 表示 CAN 发送层失败。先停止 ROS 驱动，确认 PiPER 电源、CANH/CANL、USB-CAN 和虚拟机 USB 接管，再重新初始化 `can0` 为 1 Mbps；不能靠重复调用 `/enable_srv` 修复。
+- `can0` 重新启动后，必须先看到 `/joint_states` 稳定约 170--200 Hz，再启动视觉流程。只有 USB 识别到 CAN 适配器不代表机械臂总线已经连通。
+- `/piper_jog_adapter` 消失时，即使 Servo 或视觉节点还在，实体也不会运动。启动脚本现在把适配器作为必需节点等待；手动诊断时必须确认节点和 `arm` 服务都存在。
+- `START_AUTHORIZED` 只表示视觉启动请求已接受；`PREPARE` 表示正在复位；`SEARCH` 才表示开始自动寻找目标；`PREPARE_EXECUTION_FAILED` 表示准备姿态没有通过实体反馈到位。
+- 本次曾因机械臂停在 `joint1≈1.498、joint5≈-1.199` 的硬停姿态而无法执行准备轨迹。正确处理是先停止视觉、失能 PiPER，再人工恢复到安全姿态，之后重新启动流程。
 
 ### 早期 Servo 模型状态问题
 
@@ -164,7 +189,7 @@ start_brain_robot_cube_real.sh
 
 ### 实体驱动使能命令
 
-启动流程后，在确认工作区安全时执行一次：
+一键脚本按键 `2` 会执行下面的实体驱动使能；如果需要手动诊断，也可执行：
 
 ```bash
 timeout 8s ros2 service call \
@@ -173,7 +198,7 @@ timeout 8s ros2 service call \
   "{enable_request: true}"
 ```
 
-必须返回 `enable_response: true`。这一步完成后，才按 `1`、`2`、`3` 进行保护门、适配器和视觉搜索操作。停止时先按 `4`、`5`，再按 `0`。
+必须返回 `enable_response: true`。手动启动时，完成实体使能后再调用适配器的 `enable_motion` 和 `arm`。一键脚本则按 `1`、`2`、`3` 操作，其中 `2` 已包含这三步。停止时先按 `4`、`5`，再按 `0`；退出清理会再次尝试关闭实体使能。
 
 ## 可直接执行的真机启动流程
 
