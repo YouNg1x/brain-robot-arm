@@ -122,6 +122,22 @@ topic_exists() {
   timeout 5s ros2 topic list 2>/dev/null | grep -Fxq "$1"
 }
 
+start_visual_sequence() {
+  echo "[启动] 使能 PiPER，并先移动到观测复位姿态..."
+  if timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
+    '{enable_request: true}' >/dev/null; then
+    timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
+      std_srvs/srv/Trigger '{}' >/dev/null || true
+    timeout 5s ros2 service call /piper_jog_adapter/arm \
+      std_srvs/srv/Trigger '{}' >/dev/null || true
+    timeout 8s ros2 service call /visual_search_controller/start \
+      std_srvs/srv/Trigger '{}' >/dev/null || true
+    echo "[启动] 已开始复位；复位完成后自动进入紫色方块搜索。"
+  else
+    echo "[错误] PiPER 实体使能失败，未启动复位。"
+  fi
+}
+
 echo "=================================================="
 echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
@@ -172,21 +188,14 @@ wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
 start_group debug_image_view ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
 echo "[7/7] 全部组件已就绪。"
+start_visual_sequence
 echo
-echo "操作：按 1 一键自动抓取；按 2 紧急停止当前运动（保持 PiPER 和适配器使能）；按 0 退出。"
+echo "操作：启动后已自动复位并搜索；按 1 重新启动搜索；按 2 紧急停止当前运动（保持 PiPER 和适配器使能）；按 0 退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
       1)
-        echo "[使能] 正在使能 PiPER 实体驱动..."
-        if timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
-          '{enable_request: true}'; then
-          timeout 5s ros2 service call /piper_jog_adapter/enable_motion std_srvs/srv/Trigger '{}' || true
-          timeout 5s ros2 service call /piper_jog_adapter/arm std_srvs/srv/Trigger '{}' || true
-          timeout 8s ros2 service call /visual_search_controller/start std_srvs/srv/Trigger '{}' || true
-        else
-          echo "[错误] PiPER 实体使能失败，未 arm 适配器。"
-        fi
+        start_visual_sequence
         ;;
       2)
         echo "[急停] 停止视觉和 Servo 输出，保持实体使能与当前位置..."
