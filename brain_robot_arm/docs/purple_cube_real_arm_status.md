@@ -64,6 +64,7 @@
 - 2026-09-20 已在实体机完成关键链路验证：一键启动后按 `1、2、3`，控制器发布约 49 秒的复位轨迹，适配器成功接收并持续输出 `/joint_commands` 约 50 Hz，机械臂已实际进入自动搜寻模式。
 - 同次验证发现并修复适配器在轨迹回调中使用 ROS 2 Python 日志位置参数导致的 `TypeError`；修复提交为 `4d3ce03`。此前该异常会使适配器退出，表现为有轨迹发布但没有 `/joint_commands`。
 - 当前一键脚本按键为：`1` 串行执行“六轴零点复位→观测姿态→搜寻→居中”，`2` 在 `GRASP_READY` 后执行抓取，`0` 立即执行六轴零点复位并在零点停住，`Ctrl+C` 才执行失能并退出。
+- 2026-09-20 已接入第一阶段点云规划基础：`cube_visual_search.launch.py` 加载 `sensors_3d_real.yaml`，MoveIt 通过 `/camera/depth/points` 使用 `PointCloudOctomapUpdater`，占据地图坐标系设为 `base_link`，过滤点云输出为 `/brain_robot_vision/filtered_points`。尚未完成 Ubuntu 实机编译、RViz 地图显示和机械臂自过滤验收。
 
 ## 当前代码架构
 
