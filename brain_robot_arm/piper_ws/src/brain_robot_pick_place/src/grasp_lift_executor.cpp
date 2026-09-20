@@ -65,6 +65,8 @@ public:
       "/brain_robot_grasp/arm_trajectory", rclcpp::QoS(1));
     gripper_command_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
       "/brain_robot_grasp/gripper_command", rclcpp::QoS(1));
+    reacquire_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      grasp_reacquire_topic_, rclcpp::QoS(10));
     visual_state_subscription_ = create_subscription<std_msgs::msg::String>(
       visual_state_topic_, rclcpp::QoS(1).transient_local(),
       [this](const std_msgs::msg::String::SharedPtr message) {
@@ -87,6 +89,20 @@ public:
         std::lock_guard<std::mutex> lock(target_mutex_);
         target_size_ = *message;
         target_size_received_time_ = std::chrono::steady_clock::now();
+      });
+    target_error_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+      "/brain_robot_vision/pixel_error", rclcpp::SensorDataQoS(),
+      [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(target_mutex_);
+        target_error_ratio_ = message->vector.z;
+        target_error_received_time_ = std::chrono::steady_clock::now();
+      });
+    target_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      "/brain_robot_vision/target_valid", rclcpp::SensorDataQoS(),
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(target_mutex_);
+        target_valid_ = message->data;
+        target_valid_received_time_ = std::chrono::steady_clock::now();
       });
     emergency_stop_subscription_ = create_subscription<std_msgs::msg::Bool>(
       emergency_stop_topic_, rclcpp::QoS(10),
@@ -249,6 +265,10 @@ private:
     state_topic_ = ParameterOr<std::string>("grasp_state_topic", "/brain_robot_grasp/state");
     emergency_stop_topic_ = ParameterOr<std::string>(
       "emergency_stop_topic", "/brain_robot_control/emergency_stop");
+    grasp_reacquire_topic_ = ParameterOr<std::string>(
+      "grasp_reacquire_topic", "/brain_robot_grasp/reacquire");
+    grasp_alignment_error_ratio_ = ParameterOr<double>(
+      "grasp_alignment_error_ratio", 0.05);
     cup_follow_service_ = ParameterOr<std::string>(
       "cup_follow_service", "/brain_robot_pick_place/set_cup_follow");
     servo_stop_service_ = ParameterOr<std::string>(
@@ -323,6 +343,7 @@ private:
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
         grasp_requested_ = true;
+        cancel_requested_ = false;
         start_worker = !worker_active_ && (prepared_ || prepare_on_grasp_ready_);
       }
       if (start_worker) {
@@ -431,6 +452,10 @@ private:
       }
       std::this_thread::sleep_for(std::chrono::duration<double>(gripper_settle_s_));
     }
+    if (!TargetStillAligned()) {
+      RequestVisualReacquire("GRASP_TARGET_SHIFT_BEFORE_PREGRASP");
+      return;
+    }
     if (diagonal_side_grasp_enabled_) {
       DiagonalSidePointGraspAndLift();
       return;
@@ -442,23 +467,32 @@ private:
     PublishState("ALIGNED_PREGRASP_PLANNING");
     geometry_msgs::msg::PoseStamped pregrasp_target;
     if (!BuildAlignedPointGrasp(pregrasp_standoff_m_, pregrasp_target)) {
-      Fail("ALIGNED_PREGRASP_TARGET_UNAVAILABLE");
+      RequestVisualReacquire("ALIGNED_PREGRASP_TARGET_UNAVAILABLE");
       return;
     }
     if (!MoveArmToPose(pregrasp_target, "ALIGNED_PREGRASP") || cancel_requested_) {
-      Fail("ALIGNED_PREGRASP_PLAN_FAILED");
+      if (!cancel_requested_) {
+        RequestVisualReacquire("ALIGNED_PREGRASP_PLAN_FAILED");
+      }
       return;
     }
     PublishState("ALIGNED_PREGRASP_REACHED");
 
+    if (!TargetStillAligned()) {
+      RequestVisualReacquire("GRASP_TARGET_SHIFT_AFTER_PREGRASP");
+      return;
+    }
+
     PublishState("LINEAR_APPROACH_PLANNING");
     geometry_msgs::msg::PoseStamped grasp_target;
     if (!BuildAlignedPointGrasp(grasp_depth_m_, grasp_target)) {
-      Fail("ALIGNED_GRASP_TARGET_UNAVAILABLE");
+      RequestVisualReacquire("ALIGNED_GRASP_TARGET_UNAVAILABLE");
       return;
     }
     if (!MoveArmCartesianToPose(grasp_target, "LINEAR_APPROACH") || cancel_requested_) {
-      Fail("LINEAR_APPROACH_FAILED");
+      if (!cancel_requested_) {
+        RequestVisualReacquire("LINEAR_APPROACH_FAILED");
+      }
       return;
     }
   }
@@ -930,6 +964,31 @@ private:
     return false;
   }
 
+  bool TargetStillAligned()
+  {
+    std::lock_guard<std::mutex> lock(target_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    const auto target_age = std::chrono::duration<double>(now - target_point_received_time_).count();
+    const auto error_age = std::chrono::duration<double>(now - target_error_received_time_).count();
+    const auto valid_age = std::chrono::duration<double>(now - target_valid_received_time_).count();
+    return target_point_received_time_ != std::chrono::steady_clock::time_point{} &&
+           target_error_received_time_ != std::chrono::steady_clock::time_point{} &&
+           target_valid_received_time_ != std::chrono::steady_clock::time_point{} &&
+           target_age <= target_timeout_s_ && error_age <= target_timeout_s_ &&
+           valid_age <= target_timeout_s_ && target_valid_ &&
+           target_error_ratio_ <= grasp_alignment_error_ratio_;
+  }
+
+  void RequestVisualReacquire(const std::string & reason)
+  {
+    cancel_requested_ = true;
+    PublishDiagnostic(reason);
+    std_msgs::msg::Bool message;
+    message.data = true;
+    reacquire_publisher_->publish(message);
+    RCLCPP_WARN(get_logger(), "Returning to visual ALIGN: %s.", reason.c_str());
+  }
+
   bool MoveGripper(const std::string & target_name)
   {
     gripper_->setStartStateToCurrentState();
@@ -1282,8 +1341,10 @@ private:
   std::string scene_ready_topic_;
   std::string state_topic_;
   std::string emergency_stop_topic_;
+  std::string grasp_reacquire_topic_;
   std::string cup_follow_service_;
   std::string servo_stop_service_;
+  double grasp_alignment_error_ratio_{0.05};
 
   std::mutex state_mutex_;
   std::mutex target_mutex_;
@@ -1298,6 +1359,10 @@ private:
   geometry_msgs::msg::Vector3Stamped target_size_;
   std::chrono::steady_clock::time_point target_point_received_time_{};
   std::chrono::steady_clock::time_point target_size_received_time_{};
+  std::chrono::steady_clock::time_point target_error_received_time_{};
+  std::chrono::steady_clock::time_point target_valid_received_time_{};
+  double target_error_ratio_{1.0};
+  bool target_valid_{false};
 
   std::shared_ptr<MoveGroupInterface> arm_;
   std::shared_ptr<MoveGroupInterface> gripper_;
@@ -1311,9 +1376,12 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diagnostic_publisher_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_trajectory_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr gripper_command_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reacquire_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr visual_state_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr target_point_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_size_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_error_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_valid_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr cup_follow_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;

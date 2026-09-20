@@ -219,6 +219,8 @@ private:
       "servo_stop_service", "/servo_node/stop_servo");
     emergency_stop_topic_ = ParameterOr<std::string>(
       "emergency_stop_topic", "/brain_robot_control/emergency_stop");
+    grasp_reacquire_topic_ = ParameterOr<std::string>(
+      "grasp_reacquire_topic", "/brain_robot_grasp/reacquire");
   }
 
   void CreateRosInterfaces()
@@ -287,6 +289,25 @@ private:
         if (move_group_) {
           move_group_->stop();
         }
+      });
+    grasp_reacquire_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      grasp_reacquire_topic_, rclcpp::QoS(10),
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        if (!message->data) {
+          return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != ControlState::GRASP_READY && state_ != ControlState::FAULT) {
+          return;
+        }
+        aligned_frames_ = 0;
+        cancel_requested_ = false;
+        if (servo_start_client_->service_is_ready()) {
+          servo_start_client_->async_send_request(
+            std::make_shared<std_srvs::srv::Trigger::Request>());
+        }
+        PublishControlDetailLocked("PHASE=ALIGN REACQUIRE_AFTER_GRASP_TARGET_SHIFT");
+        SetStateLocked(ControlState::ALIGN, "GRASP_TARGET_SHIFT_REACQUIRE");
       });
     joint_command_publisher_ = create_publisher<control_msgs::msg::JointJog>(
       joint_command_topic_, rclcpp::QoS(10));
@@ -1374,6 +1395,7 @@ private:
   std::string servo_start_service_;
   std::string servo_stop_service_;
   std::string emergency_stop_topic_;
+  std::string grasp_reacquire_topic_;
 
   std::unordered_map<std::string, double> joint_positions_;
   SteadyTime joint_state_time_{};
@@ -1406,6 +1428,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr servo_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr grasp_reacquire_subscription_;
   rclcpp::Publisher<control_msgs::msg::JointJog>::SharedPtr joint_command_publisher_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_trajectory_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_;

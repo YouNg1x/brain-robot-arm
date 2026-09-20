@@ -35,7 +35,8 @@ visual_search_controller:
     joint_state_timeout_s: 0.30
     target_acquire_frames: 1
     align_stable_frames: 5
-    target_acquire_error_ratio: 0.20
+    target_acquire_error_ratio: 0.05
+    grasp_reacquire_topic: /brain_robot_grasp/reacquire
     horizontal_kp: 0.00675
     vertical_kp: 0.00675
     align_joint_speed_limit: 0.135
@@ -82,4 +83,6 @@ grasp_lift_executor:
     min_object_size_m: 0.01
     max_object_size_m: 0.25
     target_timeout_s: 0.60
+    grasp_alignment_error_ratio: 0.05
+    grasp_reacquire_topic: /brain_robot_grasp/reacquire
     emergency_stop_topic: /brain_robot_control/emergency_stop
