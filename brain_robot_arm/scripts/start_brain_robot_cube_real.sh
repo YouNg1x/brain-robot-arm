@@ -6,7 +6,6 @@ ROS_SETUP=/opt/ros/humble/setup.bash
 PIPER_WS="${PIPER_ROS_WS:-$HOME/piper_ros}"
 APP_WS="${BRAIN_ROBOT_WS:-$HOME/piper_ws}"
 CAMERA_WS="${BRAIN_ROBOT_CAMERA_WS:-$HOME/ros2_ws}"
-INIT_SCRIPT="${PIPER_INIT_SCRIPT:-$HOME/init_arm.sh}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-45}"
 PIDS=()
 
@@ -35,8 +34,6 @@ if [[ -n "${CONDA_PREFIX:-}" ]] && command -v conda >/dev/null 2>&1; then
 fi
 [[ -f "$ROS_SETUP" && -f "$PIPER_WS/install/setup.bash" && -f "$APP_WS/install/setup.bash" ]] ||
   fail "ROS2、PiPER 或应用工作空间尚未就绪。"
-[[ -f "$INIT_SCRIPT" ]] || fail "找不到实体初始化脚本：$INIT_SCRIPT"
-
 set +u
 source "$ROS_SETUP"
 source "$PIPER_WS/install/setup.bash"
@@ -57,6 +54,22 @@ wait_for() {
 
 start_group() { setsid "$@" & PIDS+=("$!"); }
 
+configure_can() {
+  command -v ip >/dev/null 2>&1 || fail "未找到 ip 命令。"
+  ip link show can0 >/dev/null 2>&1 || fail "未找到 can0；请确认 USB-CAN 已连接。"
+  echo "[CAN] 重载 gs_usb 并配置 can0 为 1 Mbps..."
+  sudo ip link set can0 down 2>/dev/null || true
+  sudo modprobe -r gs_usb 2>/dev/null || true
+  sudo modprobe gs_usb || fail "无法加载 gs_usb 驱动。"
+  sleep 1
+  sudo ip link set can0 down 2>/dev/null || true
+  sudo ip link set can0 type can bitrate 1000000 2>/dev/null ||
+    fail "无法配置 can0；请检查 USB-CAN 连接。"
+  sudo ip link set can0 up || fail "无法启动 can0。"
+  ip -details link show can0 | grep -E 'state (UP|UNKNOWN)|bitrate 1000000' >/dev/null ||
+    fail "can0 未处于 1 Mbps 工作状态。"
+}
+
 node_exists() {
   timeout 5s ros2 node list 2>/dev/null | grep -Fxq "$1"
 }
@@ -70,8 +83,8 @@ echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
 echo "=================================================="
 echo "[1/7] 检查并初始化实体 CAN/机械臂..."
+configure_can
 if ! node_exists /piper_ctrl_single_node; then
-  bash "$INIT_SCRIPT" || fail "实体机械臂初始化失败。"
   start_group ros2 run piper piper_single_ctrl \
     --ros-args \
     -p can_port:=can0 \

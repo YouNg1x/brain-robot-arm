@@ -76,7 +76,7 @@ start_brain_robot_cube_real.sh
 
 关键文件：
 
-- `scripts/start_brain_robot_cube_real.sh`：实体一键启动、PID 组管理、按键交互和关闭流程。
+- `scripts/start_brain_robot_cube_real.sh`：实体一键启动 CAN、PiPER 驱动、相机、检测器、MoveIt/Servo、适配器、PID 组管理、按键交互和关闭流程；不再依赖单独的 `init_arm.sh`。
 - `piper_ws/src/brain_robot_ball_pick/launch/cube_visual_search.launch.py`：启动 MoveIt、Servo、适配器、视觉控制器和执行器。
 - `piper_ws/src/brain_robot_ball_pick/config/cube_task_real.yaml`：真机紫色方块任务参数与保护模式。
 - `piper_ws/src/brain_robot_pick_place/scripts/piper_jog_adapter.py`：Servo `JointJog` 到实体关节位置命令的受限转换。
@@ -146,6 +146,10 @@ ALIGN
 ### 操作者可见界面
 
 一键启动后只显示检测调试图：`/brain_robot_vision/debug_image`，用于确认检测框、目标中心和识别状态。原始彩色图窗口已按操作者要求移除；不能只通过 `ros2 topic hz` 判断视觉功能已经可用。
+
+### 真正的一键启动
+
+当前脚本会在同一个终端内完成以下编排：重载 `gs_usb`、配置 `can0` 为 1 Mbps、启动 PiPER 驱动并等待 `/joint_states`，启动 Astra RGB-D 相机并等待图像话题，然后启动紫色方块检测、MoveIt、Servo、保护适配器、视觉控制器、抓取执行器和调试窗口。脚本退出时会停止本次启动的进程并关闭运动门。以后不需要分别打开驱动、相机和视觉三个终端；安装脚本会把它更新为 `~/start_brain_robot_cube_real.sh`。
 
 ### 控制数据链路
 
