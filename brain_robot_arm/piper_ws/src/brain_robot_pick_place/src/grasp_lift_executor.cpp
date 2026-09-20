@@ -495,6 +495,7 @@ private:
       }
       return;
     }
+    FinishGraspAndLift();
   }
 
   void DiagonalSidePointGraspAndLift()
