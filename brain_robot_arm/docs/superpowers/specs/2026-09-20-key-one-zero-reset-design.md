@@ -15,11 +15,11 @@
 
 零点复位沿用视觉控制器的 `/visual_search_controller/reset` 服务。该服务发布从当前反馈关节位置到 `reset_joint_positions` 的实体关节轨迹，等待反馈进入容差后发布 `RESET_COMPLETE`。这属于软件目标位置复位，不会修改编码器零点或调用厂商硬件 homing。
 
-启动脚本的按键 `1` 将串行调用零点复位服务，并订阅/轮询视觉控制状态直到收到 `RESET_COMPLETE`；只有成功后才调用已有的 `start_visual_sequence`。零点复位失败或超时则不进入观测姿态和搜索。
+启动脚本的按键 `1` 将串行调用零点复位服务，并轮询视觉控制器的 `reason` 话题直到收到 `RESET_COMPLETE`；只有成功后才调用已有的 `start_visual_sequence`。零点复位失败或超时则不进入观测姿态和搜索。
 
 ## 验收
 
-1. 按 `1` 时，状态首先为 `RESET_AUTHORIZED`，并且 `/joint_states` 最终接近六轴 `0 rad`。
+1. 按 `1` 时，状态首先为 `PREPARE`、原因是 `RESET_AUTHORIZED`，并且 `/joint_states` 最终接近六轴 `0 rad`。
 2. 在 `RESET_COMPLETE` 前，不应出现观测姿态或搜索的轨迹命令。
 3. `RESET_COMPLETE` 后，脚本才调用原有视觉启动服务，状态进入 `PREPARE`，随后进入 `SEARCH`/`ALIGN`。
 4. 按 `0` 后，状态为 `RESET_COMPLETE` 并保持 `STOPPED`，不会自动进入 `PREPARE` 或 `SEARCH`。

@@ -122,42 +122,77 @@ topic_exists() {
   timeout 5s ros2 topic list 2>/dev/null | grep -Fxq "$1"
 }
 
-start_visual_sequence() {
-  echo "[启动] 使能 PiPER，并先移动到观测复位姿态..."
+enable_physical_motion() {
   local result
   result=$(timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
     '{enable_request: true}' 2>&1) || result=""
-  if grep -Eq 'enable_response=True' <<<"$result"; then
-    result=$(timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
-      std_srvs/srv/Trigger '{}' 2>&1) || result=""
-    if ! grep -Eq 'success=True' <<<"$result"; then
-      echo "[错误] 运动门开启失败。"
-      return 1
-    fi
-    result=$(timeout 5s ros2 service call /piper_jog_adapter/arm \
-      std_srvs/srv/Trigger '{}' 2>&1) || result=""
-    if ! grep -Eq 'success=True' <<<"$result"; then
-      echo "[错误] 适配器 arm 失败。"
-      return 1
-    fi
-    result=$(timeout 8s ros2 service call /visual_search_controller/start \
-      std_srvs/srv/Trigger '{}' 2>&1) || result=""
-    if ! grep -Eq 'success=True' <<<"$result"; then
-      echo "[错误] 视觉复位/搜索启动失败。"
-      return 1
-    fi
-    echo "[启动] 已开始复位；复位完成后自动进入紫色方块搜索。"
-  else
+  if ! grep -Eq 'enable_response=True' <<<"$result"; then
     echo "[错误] PiPER 实体使能失败，未启动复位。"
+    return 1
+  fi
+  result=$(timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
+    std_srvs/srv/Trigger '{}' 2>&1) || result=""
+  if ! grep -Eq 'success=True' <<<"$result"; then
+    echo "[错误] 运动门开启失败。"
+    return 1
+  fi
+  result=$(timeout 5s ros2 service call /piper_jog_adapter/arm \
+    std_srvs/srv/Trigger '{}' 2>&1) || result=""
+  if ! grep -Eq 'success=True' <<<"$result"; then
+    echo "[错误] 适配器 arm 失败。"
+    return 1
   fi
 }
 
+start_visual_sequence() {
+  echo "[启动] 从零点移动到观测姿态..."
+  local result
+  result=$(timeout 8s ros2 service call /visual_search_controller/start \
+    std_srvs/srv/Trigger '{}' 2>&1) || result=""
+  if ! grep -Eq 'success=True' <<<"$result"; then
+    echo "[错误] 视觉复位/搜索启动失败。"
+    return 1
+  fi
+  echo "[启动] 已开始观测姿态复位；完成后自动进入紫色方块搜索。"
+}
+
+wait_for_zero_reset() {
+  local deadline=$((SECONDS + 120)) result
+  while (( SECONDS < deadline )); do
+    result=$(timeout 3s ros2 topic echo --once \
+      --qos-reliability reliable \
+      --qos-durability transient_local \
+      /brain_robot_visual_control/reason 2>&1) || result=""
+    if grep -Fq 'RESET_COMPLETE' <<<"$result"; then
+      echo "[复位] 六轴已到达软件零点。"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[复位] 等待六轴零点反馈超时，未进入后续流程。"
+  return 1
+}
+
+request_zero_reset() {
+  local result
+  result=$(timeout 8s ros2 service call /visual_search_controller/reset \
+    std_srvs/srv/Trigger '{}' 2>&1) || result=""
+  echo "$result"
+  if ! grep -Eq 'success=True' <<<"$result"; then
+    echo "[复位] 零点复位请求失败。"
+    return 1
+  fi
+  wait_for_zero_reset
+}
+
 restart_visual_sequence() {
-  echo "[重启] 停止当前视觉流程，然后重新执行观测姿态复位..."
+  echo "[重启] 停止当前视觉流程，先执行六轴零点复位..."
   timeout 5s ros2 service call /visual_search_controller/stop \
     std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
   timeout 5s ros2 service call /servo_node/stop_servo \
     std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  enable_physical_motion || return 1
+  request_zero_reset || return 1
   start_visual_sequence
 }
 
@@ -187,14 +222,8 @@ reset_zero_sequence() {
     std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
   timeout 5s ros2 service call /servo_node/stop_servo \
     std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
-  local result
-  result=$(timeout 8s ros2 service call /visual_search_controller/reset \
-    std_srvs/srv/Trigger '{}' 2>&1) || result=""
-  echo "$result"
-  if ! grep -Eq 'success=True' <<<"$result"; then
-    echo "[复位] 零点复位请求失败。"
-    return 1
-  fi
+  enable_physical_motion || return 1
+  request_zero_reset
 }
 
 echo "=================================================="
@@ -248,9 +277,8 @@ wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
 start_group debug_image_view ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
 echo "[7/7] 全部组件已就绪。"
-start_visual_sequence
 echo
-echo "操作：1=观测姿态复位后搜索/对齐；2=GRASP_READY 后抓取；0=立即零点复位；Ctrl+C=失能并退出。"
+echo "操作：按 1 从六轴零点开始搜索/对齐；2=GRASP_READY 后抓取；0=仅零点复位；Ctrl+C=失能并退出。"
 while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
