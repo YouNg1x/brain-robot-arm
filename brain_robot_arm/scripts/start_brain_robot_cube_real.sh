@@ -126,12 +126,21 @@ start_visual_sequence() {
   echo "[启动] 使能 PiPER，并先移动到观测复位姿态..."
   if timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
     '{enable_request: true}' >/dev/null; then
-    timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
-      std_srvs/srv/Trigger '{}' >/dev/null || true
-    timeout 5s ros2 service call /piper_jog_adapter/arm \
-      std_srvs/srv/Trigger '{}' >/dev/null || true
-    timeout 8s ros2 service call /visual_search_controller/start \
-      std_srvs/srv/Trigger '{}' >/dev/null || true
+    if ! timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
+      std_srvs/srv/Trigger '{}' >/dev/null; then
+      echo "[错误] 运动门开启失败。"
+      return 1
+    fi
+    if ! timeout 5s ros2 service call /piper_jog_adapter/arm \
+      std_srvs/srv/Trigger '{}' >/dev/null; then
+      echo "[错误] 适配器 arm 失败。"
+      return 1
+    fi
+    if ! timeout 8s ros2 service call /visual_search_controller/start \
+      std_srvs/srv/Trigger '{}' >/dev/null; then
+      echo "[错误] 视觉复位/搜索启动失败。"
+      return 1
+    fi
     echo "[启动] 已开始复位；复位完成后自动进入紫色方块搜索。"
   else
     echo "[错误] PiPER 实体使能失败，未启动复位。"
