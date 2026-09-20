@@ -152,6 +152,15 @@ start_visual_sequence() {
   fi
 }
 
+restart_visual_sequence() {
+  echo "[重启] 停止当前视觉流程，然后重新执行观测姿态复位..."
+  timeout 5s ros2 service call /visual_search_controller/stop \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  timeout 5s ros2 service call /servo_node/stop_servo \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  start_visual_sequence
+}
+
 echo "=================================================="
 echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
@@ -209,7 +218,7 @@ while true; do
   if [[ -t 0 ]] && read -r -s -n 1 -t 1 key; then
     case "$key" in
       1)
-        start_visual_sequence
+        restart_visual_sequence
         ;;
       2)
         echo "[急停] 停止视觉和 Servo 输出，保持实体使能与当前位置..."
