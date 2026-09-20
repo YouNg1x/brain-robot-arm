@@ -80,5 +80,6 @@ def generate_launch_description():
              name='grasp_lift_executor', output='screen', parameters=[
                  moveit.to_dict(),
                  os.path.join(cube_share, 'config', 'cube_task_real.yaml'),
-                 {'use_sim_time': False}]),
+                 {'use_sim_time': False}],
+             remappings=[('/joint_states', '/piper_moveit_joint_states')]),
     ])

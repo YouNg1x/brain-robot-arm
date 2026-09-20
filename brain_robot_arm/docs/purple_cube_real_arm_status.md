@@ -58,6 +58,7 @@
 - 根据用户确认，真机紫色方块任务已恢复仿真红球验证过的固定观测姿态和搜索边界：`[0.0, 0.98, -0.75, 0.0, 0.30, 0.0]`、J1 `[-0.98, 0.98]`、J5 `[-0.60, 0.95]`、局部 J5 搜索范围 `0.12`。真机搜索速度仍保持此前要求的五分之一。
 - 真机 `PREPARE` 不再依赖不存在的 MoveIt 实体控制器：规划完成后通过 `/brain_robot_grasp/arm_trajectory` 交给 `piper_jog_adapter`，适配器按实体限速执行到仿真确认的观测姿态，反馈到位后才进入 `SEARCH`。
 - 实体模式的 `grasp_lift_executor` 不再创建不存在的 MoveIt `gripper` 规划组；实体夹爪只通过 `/brain_robot_grasp/gripper_command` 发送 `50000/40000`，仿真模式仍保留 MoveIt 夹爪组。这样消除了反复出现的 `Joint 'gripper' not found in model 'piper'` 错误。
+- `grasp_lift_executor` 也必须像 `move_group` 一样订阅 `/piper_moveit_joint_states`；若直接订阅实体 `/joint_states`，驱动附带的 `gripper` 字段会反复被 MoveIt 拒绝，并污染抓取前状态。启动文件已补齐该重映射。
 - 一键脚本现在把驱动、相机、检测器、视觉栈和调试窗口输出写入 `~/brain_robot_logs/`，不再把高频日志刷满启动终端；启动时会清理超过 3 天或单个超过 100 MB 的应用日志。`~/clean_disk_space.sh` 也会执行同样的应用日志清理。
 - 2026-09-20 已在实体机完成关键链路验证：一键启动后按 `1、2、3`，控制器发布约 49 秒的复位轨迹，适配器成功接收并持续输出 `/joint_commands` 约 50 Hz，机械臂已实际进入自动搜寻模式。
 - 同次验证发现并修复适配器在轨迹回调中使用 ROS 2 Python 日志位置参数导致的 `TypeError`；修复提交为 `4d3ce03`。此前该异常会使适配器退出，表现为有轨迹发布但没有 `/joint_commands`。
