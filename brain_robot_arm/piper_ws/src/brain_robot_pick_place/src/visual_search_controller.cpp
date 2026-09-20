@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include <builtin_interfaces/msg/duration.hpp>
 #include <control_msgs/msg/joint_jog.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
@@ -524,8 +525,19 @@ private:
         return;
       }
       const double duration_s = std::max(20.0, max_delta / 0.02);
-      trajectory.points[0].time_from_start = rclcpp::Duration::from_seconds(0.0).to_builtin_msg();
-      trajectory.points[1].time_from_start = rclcpp::Duration::from_seconds(duration_s).to_builtin_msg();
+      auto make_duration = [](double seconds) {
+        builtin_interfaces::msg::Duration duration;
+        duration.sec = static_cast<int32_t>(std::floor(seconds));
+        duration.nanosec = static_cast<uint32_t>(
+          std::llround((seconds - static_cast<double>(duration.sec)) * 1e9));
+        if (duration.nanosec >= 1000000000U) {
+          ++duration.sec;
+          duration.nanosec -= 1000000000U;
+        }
+        return duration;
+      };
+      trajectory.points[0].time_from_start = make_duration(0.0);
+      trajectory.points[1].time_from_start = make_duration(duration_s);
       arm_trajectory_publisher_->publish(trajectory);
       RCLCPP_INFO(get_logger(), "Published direct real-arm prepare trajectory (%0.1f s).", duration_s);
       const auto deadline = SteadyClock::now() +
