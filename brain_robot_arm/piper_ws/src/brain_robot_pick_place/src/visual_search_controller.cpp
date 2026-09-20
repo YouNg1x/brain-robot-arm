@@ -38,6 +38,7 @@ enum class ControlState
   IDLE,
   PREPARE,
   SEARCH,
+  LAST_PATH_REACQUIRE,
   LOCAL_SEARCH,
   ALIGN,
   LEVEL_ALIGN,
@@ -62,6 +63,7 @@ const char * StateName(ControlState state)
     case ControlState::IDLE: return "IDLE";
     case ControlState::PREPARE: return "PREPARE";
     case ControlState::SEARCH: return "SEARCH";
+    case ControlState::LAST_PATH_REACQUIRE: return "LAST_PATH_REACQUIRE";
     case ControlState::LOCAL_SEARCH: return "LOCAL_SEARCH";
     case ControlState::ALIGN: return "ALIGN";
     case ControlState::LEVEL_ALIGN: return "LEVEL_ALIGN";
@@ -185,6 +187,10 @@ private:
       "full_search_vertical_range", 0.10);
     local_horizontal_range_ = ParameterOr<double>("local_horizontal_range", 0.08);
     local_vertical_range_ = ParameterOr<double>("local_vertical_range", 0.06);
+    last_path_horizontal_distance_ = ParameterOr<double>(
+      "last_path_horizontal_distance", 0.20);
+    last_path_vertical_distance_ = ParameterOr<double>(
+      "last_path_vertical_distance", 0.15);
     horizontal_search_speed_ = ParameterOr<double>("horizontal_search_speed", 0.12);
     vertical_search_speed_ = ParameterOr<double>("vertical_search_speed", 0.08);
     joint_position_tolerance_ = ParameterOr<double>("joint_position_tolerance", 0.01);
@@ -750,6 +756,9 @@ private:
         case ControlState::SEARCH:
           HandleSearchLocked(false);
           break;
+        case ControlState::LAST_PATH_REACQUIRE:
+          HandleLastPathReacquireLocked();
+          break;
         case ControlState::LOCAL_SEARCH:
           HandleSearchLocked(true);
           break;
@@ -816,6 +825,41 @@ private:
       InitializeSearchLocked(false, *horizontal, *vertical);
       SetStateLocked(ControlState::SEARCH, "FULL_SEARCH_CYCLE_RESTART");
     }
+  }
+
+  void HandleLastPathReacquireLocked()
+  {
+    if (TargetFreshLocked() && target_valid_frames_ >= target_acquire_frames_) {
+      PublishZeroLocked();
+      candidate_only_alignment_ = false;
+      aligned_frames_ = 0;
+      PublishControlDetailLocked("PHASE=ALIGN TARGET_REACQUIRED_ON_LAST_PATH");
+      SetStateLocked(ControlState::ALIGN, "TARGET_REACQUIRED_ON_LAST_PATH");
+      return;
+    }
+    if (CandidateFreshLocked()) {
+      candidate_only_alignment_ = true;
+      aligned_frames_ = 0;
+      PublishControlDetailLocked("PHASE=ALIGN COLOR_CANDIDATE_REACQUIRE");
+      SetStateLocked(ControlState::ALIGN, "COLOR_CANDIDATE_REACQUIRE");
+      return;
+    }
+
+    const auto horizontal = CurrentJointLocked(horizontal_joint_);
+    const auto vertical = CurrentJointLocked(vertical_joint_);
+    if (!horizontal || !vertical) {
+      StopLocked(ControlState::FAULT, "LAST_PATH_JOINT_STATE_MISSING");
+      return;
+    }
+    if (Reached(*horizontal, last_path_horizontal_target_) &&
+      Reached(*vertical, last_path_vertical_target_))
+    {
+      BeginLocalSearchLocked("LAST_PATH_REACQUIRE_FAILED");
+      return;
+    }
+    PublishJointLocked(
+      VelocityToward(*horizontal, last_path_horizontal_target_, horizontal_search_speed_),
+      VelocityToward(*vertical, last_path_vertical_target_, vertical_search_speed_));
   }
 
   bool StepSearchLocked()
@@ -973,7 +1017,7 @@ private:
     const bool confirmed = TargetFreshLocked();
     const bool candidate = candidate_only_alignment_ && CandidateFreshLocked();
     if (!confirmed && !candidate) {
-      BeginLocalSearchLocked("TARGET_LOST_DURING_ALIGN");
+      BeginLastPathReacquireLocked("TARGET_LOST_DURING_ALIGN");
       return;
     }
     const double error_x = confirmed ? error_x_px_ : candidate_error_x_px_;
@@ -1152,6 +1196,31 @@ private:
     SetStateLocked(ControlState::LOCAL_SEARCH, reason);
   }
 
+  void BeginLastPathReacquireLocked(const std::string & reason)
+  {
+    const auto horizontal = CurrentJointLocked(horizontal_joint_);
+    const auto vertical = CurrentJointLocked(vertical_joint_);
+    if (!horizontal || !vertical ||
+      (std::abs(last_horizontal_velocity_) < 1e-6 &&
+      std::abs(last_vertical_velocity_) < 1e-6))
+    {
+      BeginLocalSearchLocked("LAST_PATH_DIRECTION_UNAVAILABLE");
+      return;
+    }
+    target_valid_frames_ = 0;
+    aligned_frames_ = 0;
+    candidate_only_alignment_ = false;
+    last_path_horizontal_target_ = std::clamp(
+      *horizontal + std::copysign(last_path_horizontal_distance_, last_horizontal_velocity_),
+      horizontal_search_min_, horizontal_search_max_);
+    last_path_vertical_target_ = std::clamp(
+      *vertical + std::copysign(last_path_vertical_distance_, last_vertical_velocity_),
+      vertical_search_min_, vertical_search_max_);
+    SetStateLocked(ControlState::LAST_PATH_REACQUIRE, reason);
+    PublishControlDetailLocked(
+      "PHASE=LAST_PATH_REACQUIRE J1/J5=LAST_DIRECTION");
+  }
+
   void InitializeSearchLocked(bool local, double horizontal_center, double vertical_center)
   {
     search_is_local_ = local;
@@ -1248,6 +1317,12 @@ private:
       command.velocities.push_back(lock_horizon ? HorizonLockVelocityLocked(index) : 0.0);
     }
     joint_command_publisher_->publish(command);
+    if (std::abs(horizontal_velocity) > 1e-6) {
+      last_horizontal_velocity_ = horizontal_velocity;
+    }
+    if (std::abs(vertical_velocity) > 1e-6) {
+      last_vertical_velocity_ = vertical_velocity;
+    }
     PublishForwardAllowedLocked(false);
   }
 
@@ -1277,6 +1352,12 @@ private:
       command.velocities.push_back(HorizonLockVelocityLocked(index));
     }
     joint_command_publisher_->publish(command);
+    if (std::abs(horizontal_velocity) > 1e-6) {
+      last_horizontal_velocity_ = horizontal_velocity;
+    }
+    if (std::abs(vertical_velocity) > 1e-6) {
+      last_vertical_velocity_ = vertical_velocity;
+    }
     PublishForwardAllowedLocked(false);
   }
 
@@ -1370,6 +1451,7 @@ private:
   static bool IsMotionState(ControlState state)
   {
     return state == ControlState::PREPARE || state == ControlState::SEARCH ||
+           state == ControlState::LAST_PATH_REACQUIRE ||
            state == ControlState::LOCAL_SEARCH || state == ControlState::ALIGN ||
            state == ControlState::LEVEL_ALIGN || state == ControlState::LEVEL_RECOVERY ||
            state == ControlState::FINAL_ALIGN;
@@ -1473,11 +1555,17 @@ private:
   double full_search_vertical_range_{0.10};
   double local_horizontal_range_{0.08};
   double local_vertical_range_{0.06};
+  double last_path_horizontal_distance_{0.20};
+  double last_path_vertical_distance_{0.15};
   double horizontal_search_speed_{0.12};
   double vertical_search_speed_{0.08};
   double joint_position_tolerance_{0.01};
   double search_timeout_s_{75.0};
   double local_search_timeout_s_{5.0};
+  double last_path_horizontal_target_{0.0};
+  double last_path_vertical_target_{0.0};
+  double last_horizontal_velocity_{0.0};
+  double last_vertical_velocity_{0.0};
   double target_timeout_s_{0.60};
   double joint_state_timeout_s_{0.50};
   int target_acquire_frames_{3};

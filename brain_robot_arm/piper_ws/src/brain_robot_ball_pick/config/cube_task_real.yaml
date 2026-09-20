@@ -35,6 +35,8 @@ visual_search_controller:
     search_bounds_relative_to_start: false
     local_horizontal_range: 0.08
     local_vertical_range: 0.12
+    last_path_horizontal_distance: 0.20
+    last_path_vertical_distance: 0.15
     horizontal_search_speed: 0.135
     vertical_search_speed: 0.108
     joint_position_tolerance: 0.01
