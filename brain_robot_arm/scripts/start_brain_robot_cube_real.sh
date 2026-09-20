@@ -7,8 +7,11 @@ PIPER_WS="${PIPER_ROS_WS:-$HOME/piper_ros}"
 APP_WS="${BRAIN_ROBOT_WS:-$HOME/piper_ws}"
 CAMERA_WS="${BRAIN_ROBOT_CAMERA_WS:-$HOME/ros2_ws}"
 LOG_DIR="${BRAIN_ROBOT_LOG_DIR:-$HOME/brain_robot_logs}"
+LOG_MAX_MB="${BRAIN_ROBOT_LOG_MAX_MB:-20}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-45}"
 PIDS=()
+LOG_GUARD_PID=""
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() { echo "[错误] $*" >&2; exit 1; }
 cleanup() {
@@ -23,6 +26,9 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   sleep 1
   for pid in "${PIDS[@]:-}"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
+  if [[ -n "$LOG_GUARD_PID" ]]; then
+    kill "$LOG_GUARD_PID" 2>/dev/null || true
+  fi
   wait 2>/dev/null || true
   echo "[完成] 一键流程已停止；运动门已关闭。"
 }
@@ -55,10 +61,31 @@ wait_for() {
 
 prepare_logs() {
   mkdir -p "$LOG_DIR"
+  export ROS_LOG_DIR="$LOG_DIR/ros"
+  mkdir -p "$ROS_LOG_DIR"
   # Keep startup logs useful without allowing repeated ROS output to consume
   # the VM disk.  The cleanup utility performs the same maintenance on demand.
   find "$LOG_DIR" -type f -name '*.log' -mtime +3 -delete 2>/dev/null || true
-  find "$LOG_DIR" -type f -name '*.log' -size +100M -exec truncate -s 0 {} \; 2>/dev/null || true
+  find "$LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
+    -size +"${LOG_MAX_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
+}
+
+start_log_guard() {
+  (
+    while true; do
+      find "$LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
+        -size +"${LOG_MAX_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
+      # rsyslog can grow kern.log/syslog independently of ROS_LOG_DIR.  Only
+      # truncate when sudo credentials are already cached by this startup.
+      if sudo -n true 2>/dev/null; then
+        sudo -n find /var/log -maxdepth 1 -type f \
+          \( -name 'syslog*' -o -name 'kern.log*' \) \
+          -size +200M -exec truncate -s 0 {} \; 2>/dev/null || true
+      fi
+      sleep 30
+    done
+  ) &
+  LOG_GUARD_PID="$!"
 }
 
 start_group() {
@@ -100,6 +127,8 @@ echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
 echo "=================================================="
 prepare_logs
+bash "$SCRIPT_DIR/clean_disk_space.sh" >/dev/null 2>&1 || true
+start_log_guard
 echo "[1/7] 检查并初始化实体 CAN/机械臂..."
 configure_can
 if ! node_exists /piper_ctrl_single_node; then

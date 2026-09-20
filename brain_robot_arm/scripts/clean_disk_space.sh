@@ -5,6 +5,7 @@ set -Eeuo pipefail
 
 THRESHOLD_PERCENT="${DISK_CLEAN_THRESHOLD:-85}"
 ROTATED_LOG_LIMIT_MB="${DISK_ROTATED_LOG_LIMIT_MB:-200}"
+APP_LOG_LIMIT_MB="${DISK_APP_LOG_LIMIT_MB:-20}"
 APP_LOG_DIR="${BRAIN_ROBOT_LOG_DIR:-$HOME/brain_robot_logs}"
 
 usage_percent() {
@@ -17,7 +18,8 @@ echo "清理前根分区使用率：${before}%"
 echo "[1/4] 清理 ROS 日志..."
 rm -rf "${HOME}/.ros/log"/* 2>/dev/null || true
 find "$APP_LOG_DIR" -type f -name '*.log' -mtime +3 -delete 2>/dev/null || true
-find "$APP_LOG_DIR" -type f -name '*.log' -size +100M -exec truncate -s 0 {} \; 2>/dev/null || true
+find "$APP_LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
+  -size +"${APP_LOG_LIMIT_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
 
 echo "[2/4] 清理超大的轮转系统日志..."
 # syslog and kern.log are ordinary rsyslog files, not systemd journals. They
