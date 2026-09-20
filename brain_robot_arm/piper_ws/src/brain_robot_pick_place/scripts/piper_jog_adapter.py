@@ -150,7 +150,8 @@ class PiperJogAdapter(Node):
         self.trajectory_start = time.monotonic()
         self.velocities = {name: 0.0 for name in self.joint_names}
         self.last_command_time = time.monotonic()
-        self.get_logger().info('REAL ARM trajectory accepted: %d points', len(message.points))
+        self.get_logger().info(
+            f'REAL ARM trajectory accepted: {len(message.points)} points')
 
     def _gripper_command(self, message):
         if not self.armed or not self._state_fresh() or not message.position:
@@ -207,7 +208,7 @@ class PiperJogAdapter(Node):
         self.gripper_target = None
         self.velocities = {name: 0.0 for name in self.joint_names}
         self.targets.update(self.positions)
-        self.get_logger().warn('PHYSICAL MOTION DISARMED: %s', reason)
+        self.get_logger().warn(f'PHYSICAL MOTION DISARMED: {reason}')
 
     def _emergency_stop(self, message):
         if message.data:
