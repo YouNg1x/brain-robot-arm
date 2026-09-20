@@ -4,6 +4,7 @@
 set -Eeuo pipefail
 
 THRESHOLD_PERCENT="${DISK_CLEAN_THRESHOLD:-85}"
+ROTATED_LOG_LIMIT_MB="${DISK_ROTATED_LOG_LIMIT_MB:-200}"
 
 usage_percent() {
   df --output=pcent / | tail -n 1 | tr -dc '0-9'
@@ -12,13 +13,27 @@ usage_percent() {
 before="$(usage_percent)"
 echo "清理前根分区使用率：${before}%"
 
-echo "[1/3] 清理 ROS 日志..."
+echo "[1/4] 清理 ROS 日志..."
 rm -rf "${HOME}/.ros/log"/* 2>/dev/null || true
 
-echo "[2/3] 压缩 systemd 日志到 200 MB..."
+echo "[2/4] 清理超大的轮转系统日志..."
+# syslog.1/kern.log.1 are ordinary files, not systemd journals.  They have
+# previously grown to several GB because journal vacuuming does not touch
+# them.  Truncate only matching rotated files above the configured limit;
+# keep the files and permissions so rsyslog/logrotate can continue normally.
+sudo find /var/log -maxdepth 1 -type f \
+  \( -name 'syslog.*' -o -name 'kern.log.*' \) \
+  -size "+${ROTATED_LOG_LIMIT_MB}M" -exec sh -c '
+    for log_file do
+      printf "清空轮转日志：%s (%s)\\n" "$log_file" "$(du -h "$log_file" | cut -f1)"
+      truncate -s 0 "$log_file"
+    done
+  ' sh {} +
+
+echo "[3/4] 压缩 systemd 日志到 200 MB..."
 sudo journalctl --vacuum-size=200M
 
-echo "[3/3] 清理 apt 缓存..."
+echo "[4/4] 清理 apt 缓存..."
 sudo apt clean
 
 after="$(usage_percent)"
