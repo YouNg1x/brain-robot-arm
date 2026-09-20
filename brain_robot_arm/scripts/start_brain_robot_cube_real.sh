@@ -6,6 +6,7 @@ ROS_SETUP=/opt/ros/humble/setup.bash
 PIPER_WS="${PIPER_ROS_WS:-$HOME/piper_ros}"
 APP_WS="${BRAIN_ROBOT_WS:-$HOME/piper_ws}"
 CAMERA_WS="${BRAIN_ROBOT_CAMERA_WS:-$HOME/ros2_ws}"
+LOG_DIR="${BRAIN_ROBOT_LOG_DIR:-$HOME/brain_robot_logs}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-45}"
 PIDS=()
 
@@ -52,7 +53,23 @@ wait_for() {
   fail "等待 $name 超时。"
 }
 
-start_group() { setsid "$@" & PIDS+=("$!"); }
+prepare_logs() {
+  mkdir -p "$LOG_DIR"
+  # Keep startup logs useful without allowing repeated ROS output to consume
+  # the VM disk.  The cleanup utility performs the same maintenance on demand.
+  find "$LOG_DIR" -type f -name '*.log' -mtime +3 -delete 2>/dev/null || true
+  find "$LOG_DIR" -type f -name '*.log' -size +100M -exec truncate -s 0 {} \; 2>/dev/null || true
+}
+
+start_group() {
+  local tag="$1"
+  shift
+  local logfile="$LOG_DIR/${tag}.log"
+  : > "$logfile"
+  setsid "$@" >"$logfile" 2>&1 &
+  PIDS+=("$!")
+  echo "[后台] ${tag} 日志：${logfile}"
+}
 
 configure_can() {
   command -v ip >/dev/null 2>&1 || fail "未找到 ip 命令。"
@@ -82,10 +99,11 @@ echo "=================================================="
 echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
 echo "=================================================="
+prepare_logs
 echo "[1/7] 检查并初始化实体 CAN/机械臂..."
 configure_can
 if ! node_exists /piper_ctrl_single_node; then
-  start_group ros2 run piper piper_single_ctrl \
+  start_group piper_driver ros2 run piper piper_single_ctrl \
     --ros-args \
     -p can_port:=can0 \
     -p auto_enable:=false \
@@ -100,7 +118,7 @@ wait_for service /enable_srv
 
 echo "[2/7] 检查并启动 RGB-D 相机..."
 if ! node_exists /camera/camera; then
-  start_group ros2 launch astra_camera astra.launch.py
+  start_group astra_camera ros2 launch astra_camera astra.launch.py
 else
   echo "[复用] 已检测到 /camera/camera"
 fi
@@ -108,11 +126,11 @@ wait_for topic /camera/color/image_raw
 wait_for topic /camera/depth/image_raw
 
 echo "[3/7] 启动紫色方块 RGB-D 检测..."
-start_group ros2 launch brain_robot_ball_pick cube_detector.launch.py
+start_group cube_detector ros2 launch brain_robot_ball_pick cube_detector.launch.py
 wait_for topic /brain_robot_vision/debug_image
 
 echo "[4/7] 启动 MoveIt、Servo 和真机保护适配器..."
-start_group ros2 launch brain_robot_ball_pick cube_visual_search.launch.py
+start_group visual_stack ros2 launch brain_robot_ball_pick cube_visual_search.launch.py
 wait_for node /move_group
 wait_for node /servo_node
 wait_for node /piper_jog_adapter
@@ -123,7 +141,7 @@ wait_for service /grasp_lift_executor/execute
 echo "[5/7] 检查完整 MoveIt 反馈..."
 wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
-start_group ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
+start_group debug_image_view ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
 echo "[7/7] 全部组件已就绪。"
 echo
 echo "操作：按 1 一键自动抓取；按 2 紧急停止当前运动（保持 PiPER 和适配器使能）；按 0 退出。"

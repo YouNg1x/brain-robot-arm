@@ -169,6 +169,7 @@ public:
 
   const std::string & ArmGroup() const {return arm_group_;}
   const std::string & GripperGroup() const {return gripper_group_;}
+  bool SimulationOnly() const {return simulation_only_;}
 
 private:
   template<typename T>
@@ -280,7 +281,7 @@ private:
 
   void ConfigureMoveGroups()
   {
-    if (!arm_ || !gripper_) {
+    if (!arm_ || (simulation_only_ && !gripper_)) {
       return;
     }
     arm_->setPlanningTime(planning_time_s_);
@@ -289,14 +290,17 @@ private:
     arm_->setMaxAccelerationScalingFactor(acceleration_scaling_);
     arm_->setGoalPositionTolerance(position_tolerance_);
     arm_->setGoalOrientationTolerance(orientation_tolerance_);
-    gripper_->setPlanningTime(planning_time_s_);
-    gripper_->setMaxVelocityScalingFactor(velocity_scaling_);
-    gripper_->setMaxAccelerationScalingFactor(acceleration_scaling_);
+    if (gripper_) {
+      gripper_->setPlanningTime(planning_time_s_);
+      gripper_->setMaxVelocityScalingFactor(velocity_scaling_);
+      gripper_->setMaxAccelerationScalingFactor(acceleration_scaling_);
+    }
   }
 
   void HandleVisualState(const std::string & visual_state)
   {
-    if (!configuration_ok_ || !arm_ || !gripper_ || !planning_scene_) {
+    if (!configuration_ok_ || !arm_ || !planning_scene_ ||
+      (simulation_only_ && !gripper_)) {
       return;
     }
     if (visual_state == "LEVEL_ALIGN") {
@@ -1329,8 +1333,11 @@ int main(int argc, char * argv[])
   try {
     auto arm = std::make_shared<brain_robot_pick_place::MoveGroupInterface>(
       node, node->ArmGroup());
-    auto gripper = std::make_shared<brain_robot_pick_place::MoveGroupInterface>(
-      node, node->GripperGroup());
+    std::shared_ptr<brain_robot_pick_place::MoveGroupInterface> gripper;
+    if (node->SimulationOnly()) {
+      gripper = std::make_shared<brain_robot_pick_place::MoveGroupInterface>(
+        node, node->GripperGroup());
+    }
     auto planning_scene =
       std::make_shared<brain_robot_pick_place::PlanningSceneInterface>();
     node->SetMoveItInterfaces(arm, gripper, planning_scene);

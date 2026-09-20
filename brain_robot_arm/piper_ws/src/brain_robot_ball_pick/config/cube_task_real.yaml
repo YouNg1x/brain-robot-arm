@@ -4,8 +4,8 @@ visual_search_controller:
     real_motion_enabled: true
     observe_pose_calibrated: true
     # Reuse the observation pose and prepare/search sequence proven by the
-    # red-ball simulation.  These rates are three times the previous real-arm
-    # values (0.015/0.012 rad/s; alignment limit 0.015 rad/s).
+    # red-ball simulation.  These rates are three times the previous
+    # configuration (0.045/0.036 rad/s; alignment limit 0.045 rad/s).
     execute_prepare: true
     skip_prepare: false
     direct_grasp_after_align: true
@@ -26,8 +26,8 @@ visual_search_controller:
     search_bounds_relative_to_start: false
     local_horizontal_range: 0.08
     local_vertical_range: 0.12
-    horizontal_search_speed: 0.015
-    vertical_search_speed: 0.012
+    horizontal_search_speed: 0.045
+    vertical_search_speed: 0.036
     joint_position_tolerance: 0.01
     search_timeout_s: 75.0
     local_search_timeout_s: 5.0
@@ -36,11 +36,11 @@ visual_search_controller:
     target_acquire_frames: 1
     align_stable_frames: 5
     target_acquire_error_ratio: 0.20
-    horizontal_kp: 0.00075
-    vertical_kp: 0.00075
-    align_joint_speed_limit: 0.015
+    horizontal_kp: 0.00225
+    vertical_kp: 0.00225
+    align_joint_speed_limit: 0.045
     horizon_lock_kp: 0.25
-    horizon_lock_speed_limit: 0.009
+    horizon_lock_speed_limit: 0.027
     horizon_lock_tolerance: 0.03
     control_rate_hz: 20.0
     prepare_velocity_scaling: 0.01

@@ -65,7 +65,7 @@ def generate_launch_description():
                  'filtered_joint_state_topic': '/piper_moveit_joint_states',
                  'output_topic': '/joint_commands',
                  'emergency_stop_topic': '/brain_robot_control/emergency_stop',
-                 'max_velocity_rad_s': 0.021,
+                 'max_velocity_rad_s': 0.063,
                  'initial_gripper_position': 0.05,
                  'visual_joint_max_delta_rad': [0.12, 0.02, 0.02, 0.05, 0.10, 0.05],
              }]),
