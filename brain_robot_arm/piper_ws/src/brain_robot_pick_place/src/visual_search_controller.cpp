@@ -656,7 +656,6 @@ private:
 
   void ControlTick()
   {
-    bool relaunch_prepare = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!IsMotionState(state_)) {
@@ -676,10 +675,10 @@ private:
 
       switch (state_) {
         case ControlState::SEARCH:
-          HandleSearchLocked(false, relaunch_prepare);
+          HandleSearchLocked(false);
           break;
         case ControlState::LOCAL_SEARCH:
-          HandleSearchLocked(true, relaunch_prepare);
+          HandleSearchLocked(true);
           break;
         case ControlState::ALIGN:
           HandleAlignLocked();
@@ -697,12 +696,9 @@ private:
           break;
       }
     }
-    if (relaunch_prepare) {
-      LaunchPrepareWorker();
-    }
   }
 
-  void HandleSearchLocked(bool local, bool & relaunch_prepare)
+  void HandleSearchLocked(bool local)
   {
     if (TargetFreshLocked() && target_valid_frames_ >= target_acquire_frames_) {
       PublishZeroLocked();

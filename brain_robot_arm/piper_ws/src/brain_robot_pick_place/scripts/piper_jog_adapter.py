@@ -153,6 +153,12 @@ class PiperJogAdapter(Node):
             return
         self.trajectory = message
         self.trajectory_start = time.monotonic()
+        # The prepare trajectory establishes the observation pose. Visual
+        # limits must be measured from that pose, not from the pre-arm posture.
+        final_point = message.points[-1]
+        for index, name in enumerate(message.joint_names):
+            if index < len(final_point.positions) and name in self.visual_baseline:
+                self.visual_baseline[name] = float(final_point.positions[index])
         self.velocities = {name: 0.0 for name in self.joint_names}
         self.last_command_time = time.monotonic()
         self.get_logger().info(
