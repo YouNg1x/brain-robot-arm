@@ -246,6 +246,8 @@ F2 的第一部分已实现：监督器仅从 MoveIt 已自过滤的 `/brain_rob
 
 仓库中的 PiPER 模型为 `base_link`、主连杆、`gripper_base` 和夹爪连杆提供 collision STL。此前尝试让监督器直接加载 `RobotModelLoader`，但当前 Ubuntu 的 MoveIt 开发包未导出对应头文件；该尝试已撤回，避免阻断整包构建。后续轨迹认证将通过已运行的 MoveIt Planning Scene 服务完成，而不是在监督器内重复加载模型；这更符合当前系统中 `move_group` 作为规划场景权威的架构。
 
+监督器的点云体素变换只依赖基础 `tf2`：直接读取 TF 消息中的平移和四元数构造变换，不依赖该 Ubuntu 环境缺失的 `tf2_geometry_msgs` C++ 头文件。
+
 ## 推荐安全操作顺序
 
 1. 清空机械臂工作区并确认急停/手动断电方式可用。

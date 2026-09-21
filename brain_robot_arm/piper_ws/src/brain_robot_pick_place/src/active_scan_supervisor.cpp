@@ -18,13 +18,9 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2/exceptions.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2/time.h>
-#if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#else
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#endif
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -146,7 +142,15 @@ private:
     try {transform = tf_buffer_.lookupTransform(reference_frame_, cloud.header.frame_id, tf2::TimePointZero);}
     catch (const tf2::TransformException &) {return;}
     tf2::Transform base_from_cloud;
-    tf2::fromMsg(transform.transform, base_from_cloud);
+    base_from_cloud.setOrigin(tf2::Vector3(
+        transform.transform.translation.x,
+        transform.transform.translation.y,
+        transform.transform.translation.z));
+    base_from_cloud.setRotation(tf2::Quaternion(
+        transform.transform.rotation.x,
+        transform.transform.rotation.y,
+        transform.transform.rotation.z,
+        transform.transform.rotation.w));
     const auto now = std::chrono::steady_clock::now();
     const auto origin = base_from_cloud.getOrigin();
     const std::size_t points = static_cast<std::size_t>(cloud.width) * cloud.height;
