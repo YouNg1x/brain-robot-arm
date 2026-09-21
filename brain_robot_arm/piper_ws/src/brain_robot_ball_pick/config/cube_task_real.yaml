@@ -26,8 +26,9 @@ visual_search_controller:
     alignment_assist_horizontal_sign: 1.0
     alignment_assist_vertical_sign: 1.0
     alignment_assist_speed_limit: 0.03
-    horizon_joint_names: []
-    horizon_lock_positions: []
+    # Do not command J4/J6 during real visual search. ROS 2 parameters do not
+    # preserve an untyped YAML empty list, so use an explicit enable flag.
+    horizon_lock_enabled: false
     horizontal_error_sign: -1.0
     vertical_error_sign: 1.0
     # Expanded real-arm J1 search envelope; the adapter absolute limit remains ±1.50 rad.

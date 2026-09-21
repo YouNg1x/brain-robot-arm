@@ -172,10 +172,13 @@ private:
       "alignment_assist_horizontal_joint", "joint2");
     alignment_assist_vertical_joint_ = ParameterOr<std::string>(
       "alignment_assist_vertical_joint", "joint3");
-    horizon_joint_names_ = ParameterOr<std::vector<std::string>>(
-      "horizon_joint_names", {"joint4", "joint6"});
-    horizon_lock_positions_ = ParameterOr<std::vector<double>>(
-      "horizon_lock_positions", {0.0, 0.0});
+    horizon_lock_enabled_ = ParameterOr<bool>("horizon_lock_enabled", true);
+    if (horizon_lock_enabled_) {
+      horizon_joint_names_ = ParameterOr<std::vector<std::string>>(
+        "horizon_joint_names", {"joint4", "joint6"});
+      horizon_lock_positions_ = ParameterOr<std::vector<double>>(
+        "horizon_lock_positions", {0.0, 0.0});
+    }
     level_align_enabled_ = ParameterOr<bool>("level_align_enabled", false);
     direct_grasp_after_align_ = ParameterOr<bool>("direct_grasp_after_align", false);
     level_joint2_name_ = ParameterOr<std::string>("level_joint2_name", "joint2");
@@ -1883,6 +1886,7 @@ private:
   std::string alignment_assist_vertical_joint_;
   std::vector<std::string> horizon_joint_names_;
   std::vector<double> horizon_lock_positions_;
+  bool horizon_lock_enabled_{true};
   bool level_align_enabled_{false};
   bool direct_grasp_after_align_{false};
   std::string level_joint2_name_;

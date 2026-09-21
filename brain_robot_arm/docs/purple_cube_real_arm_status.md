@@ -240,6 +240,8 @@ ALIGN
 
 F0/F1 已接入运行时监控和 `active_scan_supervisor`：它确认 RGB-D 点云、PiPER 关节反馈、腕部相机 TF、MoveIt Planning Scene 是否新鲜，但不发布任何运动命令。
 
+真机配置禁止 J4/J6 的水平锁定时使用 `horizon_lock_enabled: false`，而不使用 YAML 空数组。ROS 2 Humble 会把未定类型的 `[]` 解析为未设置参数，控制器读取该值会在创建服务前退出，表现为一键脚本等待 `/visual_search_controller/reset` 超时。
+
 F2 的第一部分已实现：监督器仅从 MoveIt 已自过滤的 `/brain_robot_vision/filtered_points` 读取当前会话点云，把每个有效深度终点登记为占用体素，并把相机到终点之间的射线登记为空闲体素。体素在 `base_link` 中维护，尺寸为 3 cm，10 秒不再观测就删除；程序退出后全部丢弃。因此它不会把实验桌面错误地写成永久环境模型。
 
 `MAP_INPUT_READY` 仅表示输入与体素证据新鲜，**并不表示任何机械臂轨迹已经通过碰撞认证**。下一步要基于已安装 PiPER URDF 的真实连杆碰撞几何，对候选观测/抓取轨迹逐采样检查：占用相交拒绝，未被射线确认的未知空间也拒绝。该部分完成并在 Ubuntu/Humble 构建通过前，监督器不会接管或放行实体运动。
