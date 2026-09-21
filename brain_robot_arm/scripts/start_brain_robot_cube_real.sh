@@ -163,21 +163,27 @@ enable_physical_motion() {
   result=$(timeout 8s ros2 service call /enable_srv piper_msgs/srv/Enable \
     '{enable_request: true}' 2>&1) || result=""
   if ! grep -Eq 'enable_response=True' <<<"$result"; then
-    echo "[错误] PiPER 实体使能失败，未启动复位。"
-    return 1
+    # The arm may already be physically enabled.  The driver can return
+    # false for a repeated enable request; that must not prevent key 1 from
+    # attempting the reset path.
+    echo "[警告] PiPER 重复使能未返回 True；继续尝试运动门和适配器。"
   fi
-  result=$(timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
-    std_srvs/srv/Trigger '{}' 2>&1) || result=""
-  if ! grep -Eq 'success=True' <<<"$result"; then
-    echo "[错误] 运动门开启失败。"
-    return 1
-  fi
-  result=$(timeout 5s ros2 service call /piper_jog_adapter/arm \
-    std_srvs/srv/Trigger '{}' 2>&1) || result=""
-  if ! grep -Eq 'success=True' <<<"$result"; then
-    echo "[错误] 适配器 arm 失败。"
-    return 1
-  fi
+  local attempt
+  for attempt in 1 2 3; do
+    result=$(timeout 5s ros2 service call /piper_jog_adapter/enable_motion \
+      std_srvs/srv/Trigger '{}' 2>&1) || result=""
+    if grep -Eq 'success=True' <<<"$result"; then
+      result=$(timeout 5s ros2 service call /piper_jog_adapter/arm \
+        std_srvs/srv/Trigger '{}' 2>&1) || result=""
+      if grep -Eq 'success=True' <<<"$result"; then
+        return 0
+      fi
+    fi
+    echo "[重试] 运动门/适配器 arm 第 ${attempt}/3 次未完成。"
+    sleep 1
+  done
+  echo "[错误] 运动门和适配器 arm 均未成功；未发送复位轨迹。"
+  return 1
 }
 
 start_visual_sequence() {
