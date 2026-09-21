@@ -31,9 +31,9 @@ visual_search_controller:
     horizon_lock_enabled: false
     horizontal_error_sign: -1.0
     vertical_error_sign: 1.0
-    # Expanded real-arm J1 search envelope; the adapter absolute limit remains ±1.50 rad.
-    horizontal_search_min: -1.40
-    horizontal_search_max: 1.40
+    # Use the adapter's full configured J1 software envelope for visual search.
+    horizontal_search_min: -1.50
+    horizontal_search_max: 1.50
     vertical_search_min: -0.60
     vertical_search_max: 0.95
     search_bounds_relative_to_start: false
