@@ -52,6 +52,15 @@ visual_search_controller:
     joint_position_tolerance: 0.01
     search_timeout_s: 75.0
     local_search_timeout_s: 5.0
+    # Real search is executed as short MoveIt-planned segments. Each segment
+    # is collision-checked against the current planning scene before it is
+    # sent to piper_jog_adapter; no blind JointJog search is used on hardware.
+    search_planning_step_rad: 0.08
+    search_planning_time_s: 0.50
+    search_planning_attempts: 2
+    search_planning_velocity_scaling: 0.05
+    search_planning_acceleration_scaling: 0.05
+    search_segment_timeout_s: 12.0
     target_timeout_s: 0.60
     joint_state_timeout_s: 0.30
     target_acquire_frames: 1
@@ -79,6 +88,8 @@ visual_search_controller:
     target_history_topic: /brain_robot_visual_control/target_history
     target_history_window_s: 0.40
     joint_state_topic: /joint_states
+    filtered_point_cloud_topic: /brain_robot_vision/filtered_points
+    planning_scene_timeout_s: 2.5
     joint_command_topic: /servo_node/delta_joint_cmds
     servo_status_topic: /servo_node/status
     servo_start_service: /servo_node/start_servo

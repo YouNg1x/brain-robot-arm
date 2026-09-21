@@ -23,6 +23,7 @@
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int8.hpp>
@@ -116,12 +117,16 @@ public:
   ~VisualSearchController() override
   {
     cancel_requested_ = true;
+    search_plan_cancel_ = true;
     if (move_group_) {
       move_group_->stop();
     }
     std::lock_guard<std::mutex> worker_lock(worker_mutex_);
     if (prepare_thread_.joinable()) {
       prepare_thread_.join();
+    }
+    if (search_plan_thread_.joinable()) {
+      search_plan_thread_.join();
     }
   }
 
@@ -227,6 +232,14 @@ private:
     joint_position_tolerance_ = ParameterOr<double>("joint_position_tolerance", 0.01);
     search_timeout_s_ = ParameterOr<double>("search_timeout_s", 75.0);
     local_search_timeout_s_ = ParameterOr<double>("local_search_timeout_s", 5.0);
+    search_planning_step_rad_ = ParameterOr<double>("search_planning_step_rad", 0.08);
+    search_planning_time_s_ = ParameterOr<double>("search_planning_time_s", 0.50);
+    search_planning_attempts_ = ParameterOr<int>("search_planning_attempts", 2);
+    search_planning_velocity_scaling_ = ParameterOr<double>(
+      "search_planning_velocity_scaling", 0.05);
+    search_planning_acceleration_scaling_ = ParameterOr<double>(
+      "search_planning_acceleration_scaling", 0.05);
+    search_segment_timeout_s_ = ParameterOr<double>("search_segment_timeout_s", 12.0);
 
     target_timeout_s_ = ParameterOr<double>("target_timeout_s", 0.60);
     joint_state_timeout_s_ = ParameterOr<double>("joint_state_timeout_s", 0.50);
@@ -272,6 +285,9 @@ private:
     candidate_valid_topic_ = ParameterOr<std::string>(
       "candidate_valid_topic", "/brain_robot_vision/color_candidate_valid");
     joint_state_topic_ = ParameterOr<std::string>("joint_state_topic", "/joint_states");
+    filtered_point_cloud_topic_ = ParameterOr<std::string>(
+      "filtered_point_cloud_topic", "/brain_robot_vision/filtered_points");
+    planning_scene_timeout_s_ = ParameterOr<double>("planning_scene_timeout_s", 2.5);
     joint_command_topic_ = ParameterOr<std::string>(
       "joint_command_topic", "/servo_node/delta_joint_cmds");
     servo_status_topic_ = ParameterOr<std::string>(
@@ -363,6 +379,15 @@ private:
           joint_positions_[message->name[index]] = message->position[index];
         }
         joint_state_time_ = SteadyClock::now();
+      });
+    filtered_point_cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+      filtered_point_cloud_topic_, sensor_qos,
+      [this](const sensor_msgs::msg::PointCloud2::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        point_cloud_received_time_ = SteadyClock::now();
+        point_cloud_count_ = static_cast<std::size_t>(message->width) *
+          static_cast<std::size_t>(message->height);
+        planning_scene_stale_reported_ = false;
       });
     servo_status_subscription_ = create_subscription<std_msgs::msg::Int8>(
       servo_status_topic_, rclcpp::SystemDefaultsQoS(),
@@ -558,6 +583,12 @@ private:
       last_path_reacquire_max_joint_step_rad_ <= 0.0 ||
       last_path_reacquire_max_steps_ < 1 ||
       last_path_min_predicted_depth_m_ <= 0.0 ||
+      search_planning_step_rad_ <= 0.0 || search_planning_time_s_ <= 0.0 ||
+      search_planning_attempts_ < 1 || search_planning_velocity_scaling_ <= 0.0 ||
+      search_planning_velocity_scaling_ > 1.0 ||
+      search_planning_acceleration_scaling_ <= 0.0 ||
+      search_planning_acceleration_scaling_ > 1.0 || search_segment_timeout_s_ <= 0.0 ||
+      filtered_point_cloud_topic_.empty() || planning_scene_timeout_s_ <= 0.0 ||
       target_history_reference_frame_.empty() || target_history_topic_.empty())
     {
       RCLCPP_ERROR(
@@ -572,6 +603,7 @@ private:
 
   void HandleStart(const std_srvs::srv::Trigger::Response::SharedPtr & response)
   {
+    JoinCompletedSearchPlanThread();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!configuration_ok_) {
@@ -833,6 +865,7 @@ private:
 
   void ControlTick()
   {
+    JoinCompletedSearchPlanThread();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!IsMotionState(state_)) {
@@ -881,9 +914,224 @@ private:
     }
   }
 
+  void JoinCompletedSearchPlanThread()
+  {
+    if (!search_plan_done_.load()) {
+      return;
+    }
+    std::lock_guard<std::mutex> worker_lock(worker_mutex_);
+    if (search_plan_thread_.joinable() && search_plan_done_.load()) {
+      search_plan_thread_.join();
+    }
+  }
+
+  bool RequestPlannedSearchLocked(
+    double desired_horizontal, double desired_vertical, const std::string & source)
+  {
+    if (backend_ != "piper" || !real_motion_enabled_) {
+      return false;
+    }
+    if (!search_plan_done_.load()) {
+      return true;
+    }
+    if (point_cloud_count_ == 0U || !Fresh(point_cloud_received_time_, planning_scene_timeout_s_)) {
+      PublishZeroLocked();
+      if (!planning_scene_stale_reported_) {
+        PublishControlDetailLocked("SEARCH_HOLD_PLANNING_SCENE_STALE");
+        planning_scene_stale_reported_ = true;
+      }
+      return true;
+    }
+    if (search_plan_active_ || search_trajectory_active_) {
+      return true;
+    }
+    if (SteadyClock::now() < search_plan_retry_time_) {
+      PublishZeroLocked();
+      return true;
+    }
+    const auto horizontal = CurrentJointLocked(horizontal_joint_);
+    const auto vertical = CurrentJointLocked(vertical_joint_);
+    if (!horizontal || !vertical) {
+      StopLocked(ControlState::FAULT, "SEARCH_JOINT_STATE_MISSING");
+      return true;
+    }
+    const double horizontal_delta = std::clamp(
+      desired_horizontal - *horizontal, -search_planning_step_rad_, search_planning_step_rad_);
+    const double vertical_delta = std::clamp(
+      desired_vertical - *vertical, -search_planning_step_rad_, search_planning_step_rad_);
+    const double target_horizontal = *horizontal + horizontal_delta;
+    const double target_vertical = *vertical + vertical_delta;
+    if (Reached(*horizontal, target_horizontal) && Reached(*vertical, target_vertical)) {
+      return true;
+    }
+
+    const auto move_group = move_group_;
+    if (!move_group) {
+      StopLocked(ControlState::FAULT, "SEARCH_MOVE_GROUP_NOT_READY");
+      return true;
+    }
+    std::unordered_map<std::string, double> start_positions = joint_positions_;
+    search_plan_active_ = true;
+    search_plan_done_ = false;
+    search_plan_cancel_ = false;
+    const std::string plan_source = source;
+    search_plan_thread_ = std::thread(
+      [this, move_group, start_positions, target_horizontal, target_vertical, plan_source]() {
+        PlanSearchSegment(
+          move_group, start_positions, target_horizontal, target_vertical, plan_source);
+      });
+    return true;
+  }
+
+  void PlanSearchSegment(
+    const std::shared_ptr<MoveGroupInterface> & move_group,
+    const std::unordered_map<std::string, double> & start_positions,
+    double target_horizontal, double target_vertical, const std::string & source)
+  {
+    bool success = false;
+    bool scene_fresh = false;
+    trajectory_msgs::msg::JointTrajectory trajectory;
+    std::string failure_reason = "SEARCH_PLAN_FAILED";
+    if (!search_plan_cancel_ && move_group) {
+      std::map<std::string, double> target;
+      bool complete_start = true;
+      for (const auto & joint_name : joint_names_) {
+        const auto found = start_positions.find(joint_name);
+        if (found == start_positions.end() || !std::isfinite(found->second)) {
+          complete_start = false;
+          break;
+        }
+        target[joint_name] = found->second;
+      }
+      if (complete_start) {
+        target[horizontal_joint_] = target_horizontal;
+        target[vertical_joint_] = target_vertical;
+        move_group->setStartStateToCurrentState();
+        move_group->setPlanningTime(search_planning_time_s_);
+        move_group->setNumPlanningAttempts(search_planning_attempts_);
+        move_group->setMaxVelocityScalingFactor(search_planning_velocity_scaling_);
+        move_group->setMaxAccelerationScalingFactor(search_planning_acceleration_scaling_);
+        move_group->setGoalJointTolerance(joint_position_tolerance_);
+        if (move_group->setJointValueTarget(target)) {
+          MoveGroupInterface::Plan plan;
+          if (static_cast<bool>(move_group->plan(plan)) && !search_plan_cancel_ &&
+            !plan.trajectory_.joint_trajectory.points.empty())
+          {
+            const auto & planned = plan.trajectory_.joint_trajectory;
+            trajectory.joint_names = joint_names_;
+            bool compatible = true;
+            for (const auto & point : planned.points) {
+              trajectory_msgs::msg::JointTrajectoryPoint filtered;
+              filtered.time_from_start = point.time_from_start;
+              for (const auto & joint_name : joint_names_) {
+                const auto found = std::find(
+                  planned.joint_names.begin(), planned.joint_names.end(), joint_name);
+                if (found == planned.joint_names.end()) {
+                  compatible = false;
+                  break;
+                }
+                const auto index = static_cast<std::size_t>(
+                  std::distance(planned.joint_names.begin(), found));
+                if (index >= point.positions.size()) {
+                  compatible = false;
+                  break;
+                }
+                filtered.positions.push_back(point.positions[index]);
+              }
+              if (!compatible) {
+                break;
+              }
+              trajectory.points.push_back(std::move(filtered));
+            }
+            success = compatible && !trajectory.points.empty();
+            if (!success) {
+              failure_reason = "SEARCH_PLAN_JOINT_SET_INVALID";
+            }
+          }
+        } else {
+          failure_reason = "SEARCH_PLAN_TARGET_REJECTED";
+        }
+      } else {
+        failure_reason = "SEARCH_PLAN_JOINT_STATE_MISSING";
+      }
+    } else {
+      failure_reason = search_plan_cancel_ ? "SEARCH_PLAN_CANCELLED" : "SEARCH_MOVE_GROUP_NOT_READY";
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      scene_fresh = point_cloud_count_ > 0U &&
+        Fresh(point_cloud_received_time_, planning_scene_timeout_s_);
+    }
+    if (success && !search_plan_cancel_ && scene_fresh) {
+      arm_trajectory_publisher_->publish(trajectory);
+      PublishTrajectoryDiagnostic("COLLISION_CHECKED_" + source, trajectory);
+    } else if (success && !scene_fresh) {
+      success = false;
+      failure_reason = "SEARCH_PLAN_PLANNING_SCENE_STALE";
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      search_plan_active_ = false;
+      if (success && !search_plan_cancel_ && IsSearchState(state_)) {
+        search_segment_horizontal_target_ = target_horizontal;
+        search_segment_vertical_target_ = target_vertical;
+        search_trajectory_active_ = true;
+        const double duration_s = trajectory.points.empty() ? 0.0 :
+          static_cast<double>(trajectory.points.back().time_from_start.sec) +
+          static_cast<double>(trajectory.points.back().time_from_start.nanosec) * 1e-9;
+        search_segment_deadline_ = SteadyClock::now() + std::chrono::duration<double>(
+          std::max(search_segment_timeout_s_, duration_s * 2.0 + 1.0));
+        PublishControlDetailLocked("SEARCH_PLAN_ACCEPTED source=" + source);
+      } else if (!success && !search_plan_cancel_ && IsSearchState(state_)) {
+        search_plan_retry_time_ = SteadyClock::now() + std::chrono::milliseconds(500);
+        search_horizontal_direction_ *= -1;
+        PublishControlDetailLocked(failure_reason);
+      }
+    }
+    search_plan_done_ = true;
+  }
+
+  bool IsSearchState(ControlState state) const
+  {
+    return state == ControlState::SEARCH || state == ControlState::LOCAL_SEARCH ||
+           state == ControlState::LAST_PATH_REACQUIRE;
+  }
+
+  void PublishHoldTrajectoryLocked()
+  {
+    if (!arm_trajectory_publisher_) {
+      return;
+    }
+    trajectory_msgs::msg::JointTrajectory trajectory;
+    trajectory.joint_names = joint_names_;
+    trajectory.points.resize(2);
+    for (const auto & joint_name : joint_names_) {
+      const auto current = CurrentJointLocked(joint_name);
+      if (!current) {
+        return;
+      }
+      trajectory.points[0].positions.push_back(*current);
+      trajectory.points[1].positions.push_back(*current);
+    }
+    trajectory.points[1].time_from_start.sec = 0;
+    trajectory.points[1].time_from_start.nanosec = 100000000U;
+    arm_trajectory_publisher_->publish(trajectory);
+    PublishTrajectoryDiagnostic("SEARCH_HOLD", trajectory);
+  }
+
+  void CancelPlannedSearchLocked()
+  {
+    search_plan_cancel_ = true;
+    search_plan_active_ = false;
+    search_trajectory_active_ = false;
+    PublishHoldTrajectoryLocked();
+  }
+
   void HandleSearchLocked(bool local)
   {
     if (TargetFreshLocked() && target_valid_frames_ >= target_acquire_frames_) {
+      CancelPlannedSearchLocked();
       PublishZeroLocked();
       aligned_frames_ = 0;
       PublishControlDetailLocked("PHASE=ALIGN J1/J5=VISION_CENTER");
@@ -895,6 +1143,27 @@ private:
 
     const double timeout = local ? local_search_timeout_s_ : search_timeout_s_;
     const double elapsed = std::chrono::duration<double>(SteadyClock::now() - search_start_time_).count();
+    if (backend_ == "piper" && real_motion_enabled_) {
+      if (search_plan_active_) {
+        return;
+      }
+      if (search_trajectory_active_) {
+        const auto horizontal = CurrentJointLocked(horizontal_joint_);
+        const auto vertical = CurrentJointLocked(vertical_joint_);
+        if (horizontal && vertical &&
+          Reached(*horizontal, search_segment_horizontal_target_) &&
+          Reached(*vertical, search_segment_vertical_target_))
+        {
+          search_trajectory_active_ = false;
+        } else if (SteadyClock::now() >= search_segment_deadline_) {
+          CancelPlannedSearchLocked();
+          StopLocked(ControlState::FAULT, "SEARCH_SEGMENT_FEEDBACK_TIMEOUT");
+          return;
+        } else {
+          return;
+        }
+      }
+    }
     const bool search_complete = elapsed >= timeout || StepSearchLocked();
     if (!search_complete) {
       return;
@@ -923,11 +1192,33 @@ private:
   void HandleLastPathReacquireLocked()
   {
     if (TargetFreshLocked() && target_valid_frames_ >= target_acquire_frames_) {
+      CancelPlannedSearchLocked();
       PublishZeroLocked();
       aligned_frames_ = 0;
       PublishControlDetailLocked("PHASE=ALIGN TARGET_REACQUIRED_ON_LAST_PATH");
       SetStateLocked(ControlState::ALIGN, "TARGET_REACQUIRED_ON_LAST_PATH");
       return;
+    }
+    if (backend_ == "piper" && real_motion_enabled_) {
+      if (search_plan_active_) {
+        return;
+      }
+      if (search_trajectory_active_) {
+        const auto current_horizontal = CurrentJointLocked(horizontal_joint_);
+        const auto current_vertical = CurrentJointLocked(vertical_joint_);
+        if (current_horizontal && current_vertical &&
+          Reached(*current_horizontal, search_segment_horizontal_target_) &&
+          Reached(*current_vertical, search_segment_vertical_target_))
+        {
+          search_trajectory_active_ = false;
+        } else if (SteadyClock::now() >= search_segment_deadline_) {
+          CancelPlannedSearchLocked();
+          StopLocked(ControlState::FAULT, "SEARCH_SEGMENT_FEEDBACK_TIMEOUT");
+          return;
+        } else {
+          return;
+        }
+      }
     }
     const auto horizontal = CurrentJointLocked(horizontal_joint_);
     const auto vertical = CurrentJointLocked(vertical_joint_);
@@ -947,6 +1238,10 @@ private:
         }
       }
       BeginLocalSearchLocked("LAST_PATH_REACQUIRE_FAILED");
+      return;
+    }
+    if (RequestPlannedSearchLocked(
+        last_path_horizontal_target_, last_path_vertical_target_, "LAST_PATH_REACQUIRE")) {
       return;
     }
     PublishJointLocked(
@@ -994,6 +1289,9 @@ private:
 
     if (direction_changed) {
       PublishSearchDirectionLocked();
+    }
+    if (RequestPlannedSearchLocked(horizontal_target, vertical_target, "LOCAL_SEARCH")) {
+      return;
     }
     PublishJointLocked(
       VelocityToward(horizontal, horizontal_target, horizontal_search_speed_),
@@ -1075,6 +1373,12 @@ private:
 
     if (horizontal_boundary_hit || phase_changed) {
       PublishSearchDirectionLocked();
+    }
+    const double planned_vertical_target = vertical_velocity == 0.0 ?
+      vertical : vertical + (vertical_velocity > 0.0 ? search_planning_step_rad_ :
+      -search_planning_step_rad_);
+    if (RequestPlannedSearchLocked(horizontal_target, planned_vertical_target, "FULL_SEARCH")) {
+      return;
     }
     PublishJointLocked(
       VelocityToward(horizontal, horizontal_target, horizontal_search_speed_),
@@ -1286,6 +1590,7 @@ private:
 
   void BeginLocalSearchLocked(const std::string & reason)
   {
+    CancelPlannedSearchLocked();
     PublishZeroLocked();
     const auto horizontal = CurrentJointLocked(horizontal_joint_);
     const auto vertical = CurrentJointLocked(vertical_joint_);
@@ -1301,6 +1606,7 @@ private:
 
   void BeginLastPathReacquireLocked(const std::string & reason)
   {
+    CancelPlannedSearchLocked();
     target_valid_frames_ = 0;
     aligned_frames_ = 0;
     last_path_prediction_valid_ = false;
@@ -1743,6 +2049,7 @@ private:
 
   void StopLocked(ControlState final_state, const std::string & reason)
   {
+    CancelPlannedSearchLocked();
     PublishZeroLocked();
     SetStateLocked(final_state, reason);
     RequestServoStopLocked();
@@ -1833,7 +2140,10 @@ private:
   std::mutex mutex_;
   std::mutex worker_mutex_;
   std::thread prepare_thread_;
+  std::thread search_plan_thread_;
   std::atomic_bool cancel_requested_{false};
+  std::atomic_bool search_plan_cancel_{false};
+  std::atomic_bool search_plan_done_{true};
   std::shared_ptr<MoveGroupInterface> move_group_;
 
   ControlState state_{ControlState::IDLE};
@@ -1894,6 +2204,18 @@ private:
   double joint_position_tolerance_{0.01};
   double search_timeout_s_{75.0};
   double local_search_timeout_s_{5.0};
+  double search_planning_step_rad_{0.08};
+  double search_planning_time_s_{0.50};
+  int search_planning_attempts_{2};
+  double search_planning_velocity_scaling_{0.05};
+  double search_planning_acceleration_scaling_{0.05};
+  double search_segment_timeout_s_{12.0};
+  bool search_plan_active_{false};
+  bool search_trajectory_active_{false};
+  double search_segment_horizontal_target_{0.0};
+  double search_segment_vertical_target_{0.0};
+  SteadyTime search_segment_deadline_{};
+  SteadyTime search_plan_retry_time_{};
   double last_path_horizontal_target_{0.0};
   double last_path_vertical_target_{0.0};
   geometry_msgs::msg::PointStamped last_path_prediction_target_;
@@ -1931,6 +2253,8 @@ private:
   std::string candidate_error_topic_;
   std::string candidate_valid_topic_;
   std::string joint_state_topic_;
+  std::string filtered_point_cloud_topic_;
+  double planning_scene_timeout_s_{2.5};
   std::string joint_command_topic_;
   std::string servo_status_topic_;
   std::string servo_start_service_;
@@ -1940,6 +2264,9 @@ private:
 
   std::unordered_map<std::string, double> joint_positions_;
   SteadyTime joint_state_time_{};
+  SteadyTime point_cloud_received_time_{};
+  std::size_t point_cloud_count_{0U};
+  bool planning_scene_stale_reported_{false};
   SteadyTime error_received_time_{};
   SteadyTime last_target_valid_time_{};
   SteadyTime target_point_received_time_{};
@@ -1979,6 +2306,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr candidate_error_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr candidate_valid_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_point_cloud_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr servo_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr grasp_reacquire_subscription_;
