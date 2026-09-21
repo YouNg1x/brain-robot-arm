@@ -11,8 +11,8 @@
 #include <unordered_map>
 
 #include <moveit_msgs/msg/planning_scene.hpp>
-#include <moveit/robot_model/robot_model.h>
-#include <moveit/robot_model_loader/robot_model_loader.h>
+#include <moveit/robot_model/robot_model.hpp>
+#include <moveit/robot_model_loader/robot_model_loader.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -244,7 +244,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_, diagnostic_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
   std::unordered_map<VoxelKey, VoxelEvidence, VoxelKeyHash> voxel_evidence_;
-  robot_model_loader::RobotModelLoaderPtr robot_model_loader_;
+  std::shared_ptr<robot_model_loader::RobotModelLoader> robot_model_loader_;
   moveit::core::RobotModelConstPtr robot_model_;
 };
 }  // namespace brain_robot_pick_place

@@ -246,6 +246,8 @@ F2 的第一部分已实现：监督器仅从 MoveIt 已自过滤的 `/brain_rob
 
 F2 的第二部分会在启动后从与 MoveIt 相同的 `robot_description` 加载 PiPER 碰撞模型，并在诊断中输出 `collision_model` 与 `collision_links`。仓库中的实际模型为 `base_link`、主连杆、`gripper_base` 和夹爪连杆提供 collision STL；该检查用于确认运行时没有误用缺失夹爪或错误版本的模型，仍不会下发运动指令。
 
+Ubuntu 22.04 / ROS 2 Humble 的 MoveIt 2 导出头文件使用 `.hpp` 后缀；若安装脚本报找不到 `moveit/robot_model/robot_model.h`，应更新到包含本修复的版本后重新执行安装脚本。该问题是 C++ 构建兼容性错误，不会影响已安装的旧版实体运行进程。
+
 ## 推荐安全操作顺序
 
 1. 清空机械臂工作区并确认急停/手动断电方式可用。
