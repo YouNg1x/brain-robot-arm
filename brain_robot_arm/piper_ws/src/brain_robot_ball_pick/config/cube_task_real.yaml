@@ -126,6 +126,9 @@ grasp_lift_executor:
 active_scan_supervisor:
   ros__parameters:
     point_cloud_topic: /camera/depth/points
+    # MoveIt has removed robot returns from this cloud.  It is used only to
+    # build this run's temporary free/occupied voxel evidence; no map is saved.
+    evidence_point_cloud_topic: /brain_robot_vision/filtered_points
     joint_state_topic: /piper_moveit_joint_states
     planning_scene_topic: /monitored_planning_scene
     reference_frame: base_link
@@ -133,3 +136,6 @@ active_scan_supervisor:
     map_timeout_s: 1.0
     joint_state_timeout_s: 0.30
     initial_observe_stable_frames: 3
+    voxel_size_m: 0.03
+    evidence_window_s: 10.0
+    max_evidence_points_per_frame: 3000

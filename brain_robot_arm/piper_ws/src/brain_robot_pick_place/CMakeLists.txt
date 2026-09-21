@@ -98,6 +98,7 @@ ament_target_dependencies(grasp_lift_executor
 
 add_executable(active_scan_supervisor src/active_scan_supervisor.cpp)
 ament_target_dependencies(active_scan_supervisor
+  geometry_msgs
   moveit_msgs
   rclcpp
   sensor_msgs
