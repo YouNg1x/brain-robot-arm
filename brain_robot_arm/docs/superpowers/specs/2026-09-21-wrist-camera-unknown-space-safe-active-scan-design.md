@@ -1,6 +1,6 @@
 # PiPER 腕部 Astra 的未知空间禁止主动扫描设计
 
-日期：2026-09-21  
+日期：2026-09-21
 状态：设计已确认，尚未实施
 
 ## 目标
@@ -69,7 +69,7 @@
 
 职责：在启动后创建空的会话状态，确认连续稳定的 `/camera/depth/points`、相机内参和 `base_link <- camera` TF 后开始接收点云。它不保存静态地图文件，也不会复用上次启动的占据结论。
 
-输入：`/camera/depth/points`、`/tf`、`/tf_static`、`/piper_moveit_joint_states`。  
+输入：`/camera/depth/points`、`/tf`、`/tf_static`、`/piper_moveit_joint_states`。
 输出：MoveIt 已有 OctoMap 及一个诊断话题，至少包含地图年龄、最近点云时间、可用体素数量/范围和传感器 TF 状态。
 
 点云应先限距离、下采样，并依赖 MoveIt 的机器人自过滤移除可见机械臂部分。目标方块本身在接近阶段需要以局部、明确的接触策略处理，不能直接把整张环境图清空或关闭碰撞检查。
