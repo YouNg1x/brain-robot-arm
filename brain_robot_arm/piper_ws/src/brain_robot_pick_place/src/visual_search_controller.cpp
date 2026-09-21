@@ -413,12 +413,12 @@ private:
       "/brain_robot_visual_control/state", rclcpp::QoS(1).transient_local());
     reason_publisher_ = create_publisher<std_msgs::msg::String>(
       "/brain_robot_visual_control/reason", rclcpp::QoS(1).transient_local());
-    forward_allowed_publisher_ = create_publisher<std_msgs::msg::Bool>(
-      "/brain_robot_visual_control/forward_allowed", rclcpp::QoS(1).transient_local());
     search_direction_publisher_ = create_publisher<std_msgs::msg::String>(
       "/brain_robot_visual_control/search_direction", rclcpp::QoS(1).transient_local());
     target_history_publisher_ = create_publisher<std_msgs::msg::String>(
       target_history_topic_, rclcpp::QoS(1).transient_local());
+    command_diagnostic_publisher_ = create_publisher<std_msgs::msg::String>(
+      "/brain_robot_visual_control/command_diagnostic", rclcpp::QoS(1).transient_local());
 
     servo_start_client_ = create_client<std_srvs::srv::Trigger>(servo_start_service_);
     servo_stop_client_ = create_client<std_srvs::srv::Trigger>(servo_stop_service_);
@@ -498,12 +498,10 @@ private:
       RCLCPP_ERROR(get_logger(), "Search joint mapping contains an unknown joint name.");
       configuration_ok_ = false;
     }
-    if (horizon_joint_names_.empty() ||
-      horizon_joint_names_.size() != horizon_lock_positions_.size())
+    if (horizon_joint_names_.size() != horizon_lock_positions_.size())
     {
       RCLCPP_ERROR(
-        get_logger(),
-        "horizon_joint_names and horizon_lock_positions must have equal non-zero length.");
+        get_logger(), "horizon_joint_names and horizon_lock_positions must have equal length.");
       configuration_ok_ = false;
     }
     std::vector<std::string> controlled_joints{horizontal_joint_, vertical_joint_};
@@ -710,6 +708,8 @@ private:
       trajectory.points[0].time_from_start = make_duration(0.0);
       trajectory.points[1].time_from_start = make_duration(duration_s);
       arm_trajectory_publisher_->publish(trajectory);
+      PublishTrajectoryDiagnostic(
+        zero_reset ? "ZERO_RESET_TRAJECTORY" : "OBSERVE_PREPARE_TRAJECTORY", trajectory);
       RCLCPP_INFO(get_logger(), "Published direct real-arm prepare trajectory (%0.1f s).", duration_s);
       const auto deadline = SteadyClock::now() +
         std::chrono::duration<double>(prepare_execution_timeout_s_);
@@ -1543,7 +1543,7 @@ private:
       command.velocities.push_back(lock_horizon ? HorizonLockVelocityLocked(index) : 0.0);
     }
     joint_command_publisher_->publish(command);
-    PublishForwardAllowedLocked(false);
+    PublishCommandDiagnosticLocked("VISUAL_JOINT_JOG", command);
   }
 
   void PublishAlignmentJointLocked(double horizontal_velocity, double vertical_velocity)
@@ -1572,7 +1572,7 @@ private:
       command.velocities.push_back(HorizonLockVelocityLocked(index));
     }
     joint_command_publisher_->publish(command);
-    PublishForwardAllowedLocked(false);
+    PublishCommandDiagnosticLocked("VISUAL_ALIGNMENT_JOG", command);
   }
 
   void PublishLevelJointLocked(
@@ -1592,13 +1592,12 @@ private:
       command.velocities.push_back(HorizonLockVelocityLocked(index));
     }
     joint_command_publisher_->publish(command);
-    PublishForwardAllowedLocked(false);
+    PublishCommandDiagnosticLocked("LEVEL_ALIGNMENT_JOG", command);
   }
 
   void PublishZeroLocked()
   {
     PublishJointLocked(0.0, 0.0, false);
-    PublishForwardAllowedLocked(false);
   }
 
   double HorizonLockVelocityLocked(std::size_t index) const
@@ -1809,11 +1808,54 @@ private:
     reason_publisher_->publish(reason_message);
   }
 
-  void PublishForwardAllowedLocked(bool allowed)
+  void PublishCommandDiagnosticLocked(
+    const std::string & source, const control_msgs::msg::JointJog & command)
   {
-    std_msgs::msg::Bool message;
-    message.data = allowed;
-    forward_allowed_publisher_->publish(message);
+    if (!command_diagnostic_publisher_) {
+      return;
+    }
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+           << "source=" << source << " state=" << StateName(state_) << " joints=";
+    for (std::size_t index = 0; index < command.joint_names.size(); ++index) {
+      if (index > 0U) {
+        stream << ",";
+      }
+      stream << command.joint_names[index] << ":";
+      if (index < command.velocities.size()) {
+        stream << command.velocities[index];
+      } else {
+        stream << "missing";
+      }
+    }
+    std_msgs::msg::String message;
+    message.data = stream.str();
+    command_diagnostic_publisher_->publish(message);
+  }
+
+  void PublishTrajectoryDiagnostic(
+    const std::string & source, const trajectory_msgs::msg::JointTrajectory & trajectory)
+  {
+    if (!command_diagnostic_publisher_ || trajectory.points.empty()) {
+      return;
+    }
+    const auto & final_point = trajectory.points.back();
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3) << "source=" << source << " joints=";
+    for (std::size_t index = 0; index < trajectory.joint_names.size(); ++index) {
+      if (index > 0U) {
+        stream << ",";
+      }
+      stream << trajectory.joint_names[index] << ":";
+      if (index < final_point.positions.size()) {
+        stream << final_point.positions[index];
+      } else {
+        stream << "missing";
+      }
+    }
+    std_msgs::msg::String message;
+    message.data = stream.str();
+    command_diagnostic_publisher_->publish(message);
   }
 
   std::mutex mutex_;
@@ -1974,7 +2016,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr reason_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr search_direction_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_history_publisher_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr forward_allowed_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr command_diagnostic_publisher_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_service_;

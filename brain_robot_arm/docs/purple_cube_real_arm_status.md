@@ -6,11 +6,13 @@
 
 2026-09-21 已确认下一阶段设计，详见
 `docs/superpowers/specs/2026-09-21-purple-cube-continuous-tracking-and-closed-loop-grasp-design.md`。
-该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4 的源码修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
+该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4 和 B1--B3 的源码/配置修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
 
 `GRASP_READY` 现在属于内部控制定时器的持续监视状态，但仍对外发布原名称，以保持按键 `2` 的抓取授权接口。目标仍在允许误差内时保持 Servo 停止；目标像素误差超过 `target_acquire_error_ratio` 时重新启动 Servo 并进入 `ALIGN`；目标失效时进入预测重捕获而不是永久停住。
 
 视觉控制器保存最近 0.40 秒的可信目标：相机三维点、转换到 `base_link` 的三维点、像素误差、对应六轴反馈和单调时间；诊断话题 `/brain_robot_visual_control/target_history` 输出样本数量、最近点年龄、相机/基座位置、窗口速度估计、像素误差和已保存关节数量。目标丢失时，控制器以该历史的末点和速度估计生成预测点，将其投影到当前腕部相机，并最多执行两步受限的 J1/J5 重获；目标历史、TF 或预测深度不可用时则转入局部搜索。当前检测器仅在自身深度检查通过后才发布该三维点；针对反光、黑色表面的深度稳定性质量门仍属于 C1，尚未实现。
+
+B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2/J3 对齐辅助，清空 J4/J6 水平锁列表，控制器也允许该列表为空。原先无订阅者的 `/brain_robot_visual_control/forward_allowed` 已删除。新增 `/brain_robot_visual_control/command_diagnostic`，报告每条视觉 `JointJog` 的状态、来源、关节和速度，并记录零点复位/观测姿态轨迹的最终关节目标；`runtime_monitor.py` 已显示该诊断。`piper_servo_real.yaml` 已将 `check_collisions` 改为 `true`，但点云是否真实进入 MoveIt 场景、Servo 是否据此减速或硬停，仍必须由 Ubuntu 实机验证。
 
 ## 当前目标与安全边界
 

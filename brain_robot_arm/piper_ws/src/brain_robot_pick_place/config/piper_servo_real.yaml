@@ -33,4 +33,6 @@ joint_command_in_topic: ~/delta_joint_cmds
 joint_topic: /piper_moveit_joint_states
 status_topic: ~/status
 command_out_topic: /piper_servo/unused_joint_trajectory
-check_collisions: false
+# B3: Servo must query MoveIt's planning scene. The scene's depth point cloud
+# is configured by brain_robot_ball_pick/config/sensors_3d_real.yaml.
+check_collisions: true

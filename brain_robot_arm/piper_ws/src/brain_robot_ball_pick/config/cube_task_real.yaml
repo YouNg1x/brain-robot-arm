@@ -16,7 +16,9 @@ visual_search_controller:
     reset_joint_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     horizontal_joint: joint1
     vertical_joint: joint5
-    alignment_assist_enabled: true
+    # B2: visual search/alignment may only command J1/J5. J2/J3 assistance
+    # and J4/J6 horizon locks can alter the wrist's forward position.
+    alignment_assist_enabled: false
     alignment_assist_horizontal_joint: joint2
     alignment_assist_vertical_joint: joint3
     alignment_assist_horizontal_ratio: 0.20
@@ -24,8 +26,8 @@ visual_search_controller:
     alignment_assist_horizontal_sign: 1.0
     alignment_assist_vertical_sign: 1.0
     alignment_assist_speed_limit: 0.03
-    horizon_joint_names: [joint4, joint6]
-    horizon_lock_positions: [0.0, 0.0]
+    horizon_joint_names: []
+    horizon_lock_positions: []
     horizontal_error_sign: -1.0
     vertical_error_sign: 1.0
     # Expanded real-arm J1 search envelope; the adapter absolute limit remains ±1.50 rad.

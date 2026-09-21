@@ -32,6 +32,8 @@ class RuntimeMonitor(Node):
                                  lambda message: self.store('visual_reason', message.data), state_qos)
         self.create_subscription(String, '/brain_robot_visual_control/search_direction',
                                  lambda message: self.store('search_direction', message.data), state_qos)
+        self.create_subscription(String, '/brain_robot_visual_control/command_diagnostic',
+                                 lambda message: self.store('command_diagnostic', message.data), state_qos)
         self.create_subscription(String, '/brain_robot_grasp/state',
                                  lambda message: self.store('grasp_state', message.data), state_qos)
         self.create_subscription(PoseStamped, '/brain_robot_grasp/target_pose',
@@ -97,6 +99,8 @@ class RuntimeMonitor(Node):
         print(f'抓取状态: {self.value("grasp_state")}  ({self.age("grasp_state")})')
         print(f'规划诊断: {self.value("grasp_diagnostic")}  ({self.age("grasp_diagnostic")})')
         print(f'Servo 状态: {self.value("servo_status")}  ({self.age("servo_status")})')
+        print(f'命令来源: {self.value("command_diagnostic")}  '
+              f'({self.age("command_diagnostic")})')
         print()
         print(f'视觉目标: target_valid={self.value("target_valid")}  '
               f'depth_valid={self.value("depth_valid")}')
