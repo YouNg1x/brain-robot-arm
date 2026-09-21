@@ -11,8 +11,6 @@
 #include <unordered_map>
 
 #include <moveit_msgs/msg/planning_scene.hpp>
-#include <moveit/robot_model/robot_model.hpp>
-#include <moveit/robot_model_loader/robot_model_loader.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -187,7 +185,6 @@ private:
   }
   void PublishStatus()
   {
-    LoadRobotCollisionModel();
     const double cloud_age = AgeSeconds(last_point_cloud_time_);
     const double joint_age = AgeSeconds(last_joint_state_time_);
     const double scene_age = AgeSeconds(last_planning_scene_time_);
@@ -209,24 +206,7 @@ private:
       << " evidence_points=" << latest_evidence_point_count_ << " free_voxels=" << free << " occupied_voxels=" << occupied
       << " joint_state_age_s=" << joint_age << " planning_scene_age_s=" << scene_age
       << " planning_scene_octomap_payload=" << (planning_scene_has_octomap_ ? "true" : "false") << " tf=" << tf_detail;
-    out << " collision_model=" << (robot_model_ ? robot_model_->getName() : "unavailable")
-      << " collision_links=" << collision_link_count_;
     message.data = out.str(); diagnostic_publisher_->publish(message);
-  }
-  void LoadRobotCollisionModel()
-  {
-    if (robot_model_load_attempted_) return;
-    robot_model_load_attempted_ = true;
-    try {
-      robot_model_loader_ = std::make_shared<robot_model_loader::RobotModelLoader>(
-        shared_from_this(), "robot_description");
-      robot_model_ = robot_model_loader_->getModel();
-      if (robot_model_) {
-        collision_link_count_ = robot_model_->getLinkModelsWithCollisionGeometry().size();
-      }
-    } catch (const std::exception & error) {
-      RCLCPP_ERROR(get_logger(), "Unable to load PiPER collision model: %s", error.what());
-    }
   }
   std::string point_cloud_topic_, evidence_point_cloud_topic_, joint_state_topic_, planning_scene_topic_, reference_frame_, camera_optical_frame_;
   double map_timeout_s_{1.0}, joint_state_timeout_s_{0.3}, voxel_size_m_{0.03}, evidence_window_s_{10.0};
@@ -234,8 +214,6 @@ private:
   std::size_t latest_point_count_{0}, latest_evidence_point_count_{0};
   int stable_point_cloud_frames_{0};
   bool planning_scene_seen_{false}, planning_scene_has_octomap_{false};
-  bool robot_model_load_attempted_{false};
-  std::size_t collision_link_count_{0};
   std::chrono::steady_clock::time_point last_point_cloud_time_{}, last_joint_state_time_{}, last_evidence_time_{}, last_planning_scene_time_{};
   tf2_ros::Buffer tf_buffer_; tf2_ros::TransformListener tf_listener_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_subscription_, evidence_point_cloud_subscription_;
@@ -244,8 +222,6 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_, diagnostic_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
   std::unordered_map<VoxelKey, VoxelEvidence, VoxelKeyHash> voxel_evidence_;
-  std::shared_ptr<robot_model_loader::RobotModelLoader> robot_model_loader_;
-  moveit::core::RobotModelConstPtr robot_model_;
 };
 }  // namespace brain_robot_pick_place
 int main(int argc, char ** argv)

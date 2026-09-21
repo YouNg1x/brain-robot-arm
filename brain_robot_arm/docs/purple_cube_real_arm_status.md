@@ -244,9 +244,7 @@ F2 的第一部分已实现：监督器仅从 MoveIt 已自过滤的 `/brain_rob
 
 `MAP_INPUT_READY` 仅表示输入与体素证据新鲜，**并不表示任何机械臂轨迹已经通过碰撞认证**。下一步要基于已安装 PiPER URDF 的真实连杆碰撞几何，对候选观测/抓取轨迹逐采样检查：占用相交拒绝，未被射线确认的未知空间也拒绝。该部分完成并在 Ubuntu/Humble 构建通过前，监督器不会接管或放行实体运动。
 
-F2 的第二部分会在启动后从与 MoveIt 相同的 `robot_description` 加载 PiPER 碰撞模型，并在诊断中输出 `collision_model` 与 `collision_links`。仓库中的实际模型为 `base_link`、主连杆、`gripper_base` 和夹爪连杆提供 collision STL；该检查用于确认运行时没有误用缺失夹爪或错误版本的模型，仍不会下发运动指令。
-
-Ubuntu 22.04 / ROS 2 Humble 的 MoveIt 2 导出头文件使用 `.hpp` 后缀；若安装脚本报找不到 `moveit/robot_model/robot_model.h`，应更新到包含本修复的版本后重新执行安装脚本。该问题是 C++ 构建兼容性错误，不会影响已安装的旧版实体运行进程。
+仓库中的 PiPER 模型为 `base_link`、主连杆、`gripper_base` 和夹爪连杆提供 collision STL。此前尝试让监督器直接加载 `RobotModelLoader`，但当前 Ubuntu 的 MoveIt 开发包未导出对应头文件；该尝试已撤回，避免阻断整包构建。后续轨迹认证将通过已运行的 MoveIt Planning Scene 服务完成，而不是在监督器内重复加载模型；这更符合当前系统中 `move_group` 作为规划场景权威的架构。
 
 ## 推荐安全操作顺序
 
