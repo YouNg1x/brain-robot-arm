@@ -26,7 +26,7 @@
 
 新增组件：`active_scan_supervisor`（C++ ROS 2 节点，归入 `brain_robot_pick_place`）。
 
-输入：`/camera/depth/points`、`/piper_moveit_joint_states`、TF、MoveIt Planning Scene/Octomap。  
+输入：`/camera/depth/points`、`/piper_moveit_joint_states`、TF、MoveIt Planning Scene/Octomap。
 输出：
 
 - `/brain_robot_active_scan/state`：`WAITING_FOR_MAP`、`INITIAL_STILL_OBSERVE`、`VIEW_SELECTED`、`CORRIDOR_CERTIFIED`、`NO_CERTIFIED_VIEW`、`MAP_STALE`。
