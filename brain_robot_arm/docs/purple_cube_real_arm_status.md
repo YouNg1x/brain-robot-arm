@@ -6,7 +6,7 @@
 
 2026-09-21 已确认下一阶段设计，详见
 `docs/superpowers/specs/2026-09-21-purple-cube-continuous-tracking-and-closed-loop-grasp-design.md`。
-该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4、B1--B3 与 C1 的源码/配置修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
+该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4、B1--B3、C1 与 D1--D4 的源码/配置修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
 
 `GRASP_READY` 现在属于内部控制定时器的持续监视状态，但仍对外发布原名称，以保持按键 `2` 的抓取授权接口。目标仍在允许误差内时保持 Servo 停止；目标像素误差超过 `target_acquire_error_ratio` 时重新启动 Servo 并进入 `ALIGN`；目标失效时进入预测重捕获而不是永久停住。
 
@@ -20,6 +20,13 @@ B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2
 - `/brain_robot_vision/target_valid=true` 与 `depth_valid=false` 是预期的中间状态：紫色方块颜色/形状可信，机械臂可以继续搜寻或居中，但按 `2` 必须被拒绝。调试图与只读监控会显示 `/brain_robot_vision/depth_diagnostic`，例如 `DEPTH_REJECTED_FRAME_TO_FRAME_JUMP` 或 `DEPTH_REJECTED_HIGH_MEDIAN_ABSOLUTE_DEVIATION`。
 - 点云配置已指向 `/camera/depth/points`，其自过滤输出为 `/brain_robot_vision/filtered_points`。尚未在实体 RViz 中确认桌面点已进入 Octomap 或机械臂自身被正确滤除；这不是能用静态源码替代的结论。
 - 现阶段不训练模型：固定腕部相机、单一紫色方块、有限光照时，HSV 阈值、时间滤波和深度质量门更直接、可解释且运行成本低。只有出现大量相似紫色干扰、光照跨度大、频繁遮挡或多类别目标时才采集真实 RGB-D 数据训练检测/分割模型；训练也不能修复黑色或镜面材质的深度缺失。
+
+## D 阶段：闭环微步抓取
+
+- 预抓取仍由 MoveIt 规划，但实体执行现在必须等待 `/piper_moveit_joint_states` 到达轨迹终点的各关节目标；计划时长结束本身不再代表执行成功。终点容差为 0.04 rad，最长等待 12 秒，失败即回到视觉重获而不是继续接近。
+- 原来的整段笛卡尔直线接近已替换为最多 20 个 8 mm 微步。每步根据最新 RGB-D 点和当前相机 TF 重建目标，目标变化过大时空间位移会被限幅为 8 mm；每个微步都使用带碰撞检查的 `computeCartesianPath`，执行后还须重新通过目标有效、深度质量、像素对齐和关节反馈检查。
+- 微步阶段对连续两帧 `base_link` 目标点估计速度；仅在速度不超过 0.30 m/s 时向前预测 0.08 秒，用于补偿相机/控制延迟。没有可用速度或速度异常时不盲目预测。
+- 闭爪后，执行器要求 `/joint_states_feedback` 的夹爪位置在 3 秒内改变至少 0.001 rad；未确认则不抬升。该反馈只证明夹爪动作，不是力传感器，尚不能证明方块一定被夹住。
 
 ## 当前目标与安全边界
 

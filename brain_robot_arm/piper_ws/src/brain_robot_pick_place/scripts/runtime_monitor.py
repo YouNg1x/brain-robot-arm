@@ -56,6 +56,8 @@ class RuntimeMonitor(Node):
                                  lambda message: self.store('filtered_points', message), sensor_qos)
         self.create_subscription(JointState, '/joint_states',
                                  lambda message: self.store('joint_states', message), sensor_qos)
+        self.create_subscription(JointState, '/joint_states_feedback',
+                                 lambda message: self.store('gripper_feedback', message), sensor_qos)
         self.create_subscription(Int8, '/servo_node/status',
                                  lambda message: self.store('servo_status', message.data), reliable_qos)
         self.create_subscription(JointJog, '/servo_node/delta_joint_cmds',
@@ -77,6 +79,8 @@ class RuntimeMonitor(Node):
 
     @staticmethod
     def stage_hint(state: str) -> str:
+        if state.startswith('MICRO_APPROACH_STEP_'):
+            return '闭环接近：本次最多前进 8 mm，完成后将重新检查视觉、深度和关节反馈。'
         hints = {
             'SEARCH': '等待连续有效目标帧。',
             'LOCAL_SEARCH': '目标短暂丢失，正在局部重搜。',
@@ -141,6 +145,12 @@ class RuntimeMonitor(Node):
                     labels.append(f'J{index}={mapping[name]:+.3f} rad')
             print('当前关节: ' + ('  '.join(labels) if labels else '--'))
             print(f'关节数据年龄: {self.age("joint_states")}')
+        gripper_feedback = self.values.get('gripper_feedback')
+        if gripper_feedback is not None:
+            mapping = dict(zip(gripper_feedback.name, gripper_feedback.position))
+            if 'gripper' in mapping:
+                print(f'夹爪原始反馈: {mapping["gripper"]:+.5f} rad  '
+                      f'({self.age("gripper_feedback")})')
         command = self.values.get('joint_jog')
         if command is not None and command.joint_names:
             values = '  '.join(

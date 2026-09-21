@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -79,9 +80,32 @@ public:
     target_point_subscription_ = create_subscription<geometry_msgs::msg::PointStamped>(
       target_point_topic_, rclcpp::QoS(1).reliable(),
       [this](const geometry_msgs::msg::PointStamped::SharedPtr message) {
+        geometry_msgs::msg::PointStamped target_reference;
+        bool target_reference_valid = false;
+        const std::string target_frame = message->header.frame_id.empty() ?
+          camera_optical_frame_ : message->header.frame_id;
+        try {
+          const auto reference_from_target = tf_buffer_->lookupTransform(
+            lift_reference_frame_, target_frame, tf2::TimePointZero);
+          tf2::doTransform(*message, target_reference, reference_from_target);
+          target_reference_valid = true;
+        } catch (const tf2::TransformException & exception) {
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Cannot save target in %s for short-horizon approach prediction: %s",
+            lift_reference_frame_.c_str(), exception.what());
+        }
         std::lock_guard<std::mutex> lock(target_mutex_);
         target_point_camera_ = *message;
         target_point_received_time_ = std::chrono::steady_clock::now();
+        if (target_reference_valid) {
+          if (target_reference_received_time_ != std::chrono::steady_clock::time_point{}) {
+            previous_target_point_reference_ = target_point_reference_;
+            previous_target_reference_received_time_ = target_reference_received_time_;
+          }
+          target_point_reference_ = target_reference;
+          target_reference_received_time_ = target_point_received_time_;
+        }
       });
     target_size_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
       target_size_topic_, rclcpp::QoS(1).reliable(),
@@ -110,6 +134,20 @@ public:
         std::lock_guard<std::mutex> lock(target_mutex_);
         depth_valid_ = message->data;
         depth_valid_received_time_ = std::chrono::steady_clock::now();
+      });
+    joint_state_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
+      "/joint_states", rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::JointState::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(feedback_mutex_);
+        latest_joint_state_ = *message;
+        joint_state_received_time_ = std::chrono::steady_clock::now();
+      });
+    gripper_feedback_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
+      gripper_feedback_topic_, rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::JointState::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(feedback_mutex_);
+        latest_gripper_feedback_ = *message;
+        gripper_feedback_received_time_ = std::chrono::steady_clock::now();
       });
     emergency_stop_subscription_ = create_subscription<std_msgs::msg::Bool>(
       emergency_stop_topic_, rclcpp::QoS(10),
@@ -245,6 +283,11 @@ private:
     gripper_open_value_ = ParameterOr<int>("gripper_open_value", 50000);
     gripper_close_value_ = ParameterOr<int>("gripper_close_value", 40000);
     gripper_settle_s_ = ParameterOr<double>("gripper_settle_s", 2.0);
+    gripper_feedback_topic_ = ParameterOr<std::string>(
+      "gripper_feedback_topic", "/joint_states_feedback");
+    gripper_feedback_timeout_s_ = ParameterOr<double>("gripper_feedback_timeout_s", 3.0);
+    min_gripper_feedback_motion_rad_ = ParameterOr<double>(
+      "min_gripper_feedback_motion_rad", 0.001);
     top_down_pregrasp_clearance_m_ = ParameterOr<double>(
       "top_down_pregrasp_clearance_m", 0.12);
     top_down_grasp_clearance_m_ = ParameterOr<double>(
@@ -262,6 +305,12 @@ private:
       "diagonal_grasp_lift_m", 0.04);
     pregrasp_standoff_m_ = ParameterOr<double>("pregrasp_standoff_m", 0.16);
     grasp_depth_m_ = ParameterOr<double>("grasp_depth_m", 0.08);
+    approach_microstep_m_ = ParameterOr<double>("approach_microstep_m", 0.008);
+    approach_max_steps_ = ParameterOr<int>("approach_max_steps", 20);
+    approach_prediction_horizon_s_ = ParameterOr<double>(
+      "approach_prediction_horizon_s", 0.08);
+    approach_max_target_speed_m_s_ = ParameterOr<double>(
+      "approach_max_target_speed_m_s", 0.30);
     cartesian_eef_step_m_ = ParameterOr<double>("cartesian_eef_step_m", 0.005);
     linear_approach_velocity_scaling_ = ParameterOr<double>(
       "linear_approach_velocity_scaling", 0.025);
@@ -273,6 +322,10 @@ private:
     position_tolerance_ = ParameterOr<double>("grasp_position_tolerance", 0.01);
     orientation_tolerance_ = ParameterOr<double>("grasp_orientation_tolerance", 0.05);
     scene_wait_s_ = ParameterOr<double>("grasp_scene_wait_s", 10.0);
+    trajectory_feedback_tolerance_rad_ = ParameterOr<double>(
+      "trajectory_feedback_tolerance_rad", 0.04);
+    trajectory_feedback_timeout_s_ = ParameterOr<double>(
+      "trajectory_feedback_timeout_s", 12.0);
     visual_state_topic_ = ParameterOr<std::string>(
       "visual_state_topic", "/brain_robot_visual_control/state");
     scene_ready_topic_ = ParameterOr<std::string>(
@@ -292,6 +345,8 @@ private:
     configuration_ok_ = (simulation_only_ ? auto_execute_ : real_grasp_enabled_) &&
       lift_distance_m_ > 0.0 &&
       grasp_depth_m_ > 0.0 && pregrasp_standoff_m_ > grasp_depth_m_ &&
+      approach_microstep_m_ > 0.0 && approach_max_steps_ > 0 &&
+      approach_prediction_horizon_s_ >= 0.0 && approach_max_target_speed_m_s_ > 0.0 &&
       cartesian_eef_step_m_ > 0.0 && grasp_height_offset_m_ >= 0.0 &&
       gripper_tip_offset_m_ > 0.0 && top_down_pregrasp_clearance_m_ > 0.0 &&
       grasp_center_offset_m_ > 0.0 && grasp_contact_tolerance_m_ > 0.0 &&
@@ -306,7 +361,9 @@ private:
       planning_time_s_ > 0.0 && planning_attempts_ > 0 && velocity_scaling_ > 0.0 &&
       velocity_scaling_ <= 1.0 && acceleration_scaling_ > 0.0 &&
       acceleration_scaling_ <= 1.0 && linear_approach_velocity_scaling_ > 0.0 &&
-      linear_approach_velocity_scaling_ <= velocity_scaling_ && gripper_settle_s_ > 0.0;
+      linear_approach_velocity_scaling_ <= velocity_scaling_ && gripper_settle_s_ > 0.0 &&
+      gripper_feedback_timeout_s_ > 0.0 && min_gripper_feedback_motion_rad_ >= 0.0 &&
+      trajectory_feedback_tolerance_rad_ > 0.0 && trajectory_feedback_timeout_s_ > 0.0;
     if (!configuration_ok_) {
       RCLCPP_ERROR(
         get_logger(),
@@ -501,19 +558,84 @@ private:
       return;
     }
 
-    PublishState("LINEAR_APPROACH_PLANNING");
-    geometry_msgs::msg::PoseStamped grasp_target;
-    if (!BuildAlignedPointGrasp(grasp_depth_m_, grasp_target)) {
-      RequestVisualReacquire("ALIGNED_GRASP_TARGET_UNAVAILABLE");
-      return;
-    }
-    if (!MoveArmCartesianToPose(grasp_target, "LINEAR_APPROACH") || cancel_requested_) {
-      if (!cancel_requested_) {
-        RequestVisualReacquire("LINEAR_APPROACH_FAILED");
-      }
+    if (!ClosedLoopMicroApproach()) {
       return;
     }
     FinishGraspAndLift();
+  }
+
+  bool ClosedLoopMicroApproach()
+  {
+    double standoff_m = pregrasp_standoff_m_;
+    for (int step = 1; step <= approach_max_steps_; ++step) {
+      if (!TargetStillAligned()) {
+        RequestVisualReacquire("MICRO_APPROACH_TARGET_SHIFT_BEFORE_STEP");
+        return false;
+      }
+      const double next_standoff_m = std::max(
+        grasp_depth_m_, standoff_m - approach_microstep_m_);
+      PublishState("MICRO_APPROACH_STEP_" + std::to_string(step));
+      geometry_msgs::msg::PoseStamped desired_target;
+      if (!BuildAlignedPointGrasp(next_standoff_m, desired_target)) {
+        RequestVisualReacquire("MICRO_APPROACH_TARGET_UNAVAILABLE");
+        return false;
+      }
+      geometry_msgs::msg::PoseStamped bounded_target;
+      if (!BuildBoundedMicrostep(desired_target, bounded_target)) {
+        RequestVisualReacquire("MICRO_APPROACH_STEP_TARGET_UNAVAILABLE");
+        return false;
+      }
+      if (!MoveArmCartesianToPose(
+          bounded_target, "MICRO_APPROACH_STEP_" + std::to_string(step)) ||
+        cancel_requested_)
+      {
+        if (!cancel_requested_) {
+          RequestVisualReacquire("MICRO_APPROACH_STEP_PLAN_OR_FEEDBACK_FAILED");
+        }
+        return false;
+      }
+      if (!TargetStillAligned()) {
+        RequestVisualReacquire("MICRO_APPROACH_TARGET_SHIFT_AFTER_STEP");
+        return false;
+      }
+      if (next_standoff_m <= grasp_depth_m_) {
+        PublishState("MICRO_APPROACH_COMPLETE");
+        return true;
+      }
+      standoff_m = next_standoff_m;
+    }
+    RequestVisualReacquire("MICRO_APPROACH_STEP_LIMIT_REACHED");
+    return false;
+  }
+
+  bool BuildBoundedMicrostep(
+    const geometry_msgs::msg::PoseStamped & desired_target,
+    geometry_msgs::msg::PoseStamped & bounded_target)
+  {
+    const auto current = CurrentPoseInFrame(desired_target.header.frame_id);
+    if (current.header.frame_id.empty()) {
+      return false;
+    }
+    const double dx = desired_target.pose.position.x - current.pose.position.x;
+    const double dy = desired_target.pose.position.y - current.pose.position.y;
+    const double dz = desired_target.pose.position.z - current.pose.position.z;
+    const double distance_m = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (!std::isfinite(distance_m)) {
+      return false;
+    }
+    bounded_target = desired_target;
+    if (distance_m <= approach_microstep_m_) {
+      return true;
+    }
+    const double scale = approach_microstep_m_ / distance_m;
+    bounded_target.pose.position.x = current.pose.position.x + dx * scale;
+    bounded_target.pose.position.y = current.pose.position.y + dy * scale;
+    bounded_target.pose.position.z = current.pose.position.z + dz * scale;
+    bounded_target.pose.orientation = current.pose.orientation;
+    target_pose_publisher_->publish(bounded_target);
+    PublishDiagnostic("MICRO_APPROACH_STEP_CLAMPED_TO_" +
+      std::to_string(approach_microstep_m_) + "M");
+    return true;
   }
 
   void DiagonalSidePointGraspAndLift()
@@ -673,6 +795,7 @@ private:
 
   void FinishGraspAndLift()
   {
+    const double gripper_before_close = LatestGripperPosition();
     PublishState("CLOSING_GRIPPER");
     if (!CommandRealGripper(false) || cancel_requested_) {
       Fail("CLOSE_GRIPPER_FAILED");
@@ -680,6 +803,14 @@ private:
     }
     if (!simulation_only_) {
       std::this_thread::sleep_for(std::chrono::duration<double>(gripper_settle_s_));
+      if (!WaitForGripperMotion(gripper_before_close)) {
+        Fail("GRIPPER_CLOSE_FEEDBACK_UNCONFIRMED");
+        return;
+      }
+      // PiPER exposes position feedback, not a contact/force measurement. This
+      // confirms jaw actuation before lifting; object retention remains an
+      // entity-level result to validate on the real cube.
+      PublishDiagnostic("GRIPPER_CLOSE_FEEDBACK_CONFIRMED_NO_FORCE_SENSOR");
     }
     if (!simulation_only_) {
       PublishState("LIFTING");
@@ -896,28 +1027,11 @@ private:
   bool BuildAlignedPointGrasp(
     double camera_standoff_m, geometry_msgs::msg::PoseStamped & grasp_target)
   {
-    geometry_msgs::msg::PointStamped target_point_camera;
-    {
-      std::lock_guard<std::mutex> lock(target_mutex_);
-      const double age_s = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - target_point_received_time_).count();
-      if (target_point_received_time_ == std::chrono::steady_clock::time_point{} ||
-        age_s > target_timeout_s_)
-      {
-        RCLCPP_ERROR(get_logger(), "Camera target point is missing or stale (age %.3f s).", age_s);
-        return false;
-      }
-      target_point_camera = target_point_camera_;
+    geometry_msgs::msg::PointStamped cup_world;
+    if (!PredictedTargetInReference(cup_world)) {
+      return false;
     }
-
-    const std::string target_frame = target_point_camera.header.frame_id.empty() ?
-      camera_optical_frame_ : target_point_camera.header.frame_id;
     try {
-      const auto world_from_target = tf_buffer_->lookupTransform(
-        lift_reference_frame_, target_frame, tf2::TimePointZero);
-      geometry_msgs::msg::PointStamped cup_world;
-      tf2::doTransform(target_point_camera, cup_world, world_from_target);
-
       const auto world_from_camera_message = tf_buffer_->lookupTransform(
         lift_reference_frame_, camera_optical_frame_, tf2::TimePointZero);
       tf2::Quaternion current_camera_orientation;
@@ -966,6 +1080,43 @@ private:
       RCLCPP_ERROR(get_logger(), "Cannot construct horizontal grasp target: %s", exception.what());
       return false;
     }
+  }
+
+  bool PredictedTargetInReference(geometry_msgs::msg::PointStamped & predicted_target)
+  {
+    std::lock_guard<std::mutex> lock(target_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    const double age_s = std::chrono::duration<double>(now - target_reference_received_time_).count();
+    if (target_reference_received_time_ == std::chrono::steady_clock::time_point{} ||
+      age_s > target_timeout_s_)
+    {
+      RCLCPP_ERROR(get_logger(), "Reference-frame target is missing or stale (age %.3f s).", age_s);
+      return false;
+    }
+    predicted_target = target_point_reference_;
+    const double sample_dt_s = std::chrono::duration<double>(
+      target_reference_received_time_ - previous_target_reference_received_time_).count();
+    if (previous_target_reference_received_time_ == std::chrono::steady_clock::time_point{} ||
+      sample_dt_s <= 0.001 || sample_dt_s > target_timeout_s_)
+    {
+      return true;
+    }
+    const double vx = (target_point_reference_.point.x - previous_target_point_reference_.point.x) /
+      sample_dt_s;
+    const double vy = (target_point_reference_.point.y - previous_target_point_reference_.point.y) /
+      sample_dt_s;
+    const double vz = (target_point_reference_.point.z - previous_target_point_reference_.point.z) /
+      sample_dt_s;
+    const double speed_m_s = std::sqrt(vx * vx + vy * vy + vz * vz);
+    if (!std::isfinite(speed_m_s) || speed_m_s > approach_max_target_speed_m_s_) {
+      PublishDiagnostic("MICRO_APPROACH_PREDICTION_SKIPPED_UNSTABLE_TARGET_VELOCITY");
+      return true;
+    }
+    predicted_target.point.x += vx * approach_prediction_horizon_s_;
+    predicted_target.point.y += vy * approach_prediction_horizon_s_;
+    predicted_target.point.z += vz * approach_prediction_horizon_s_;
+    PublishDiagnostic("MICRO_APPROACH_SHORT_HORIZON_TARGET_PREDICTION");
+    return true;
   }
 
   bool WaitForCup()
@@ -1061,13 +1212,102 @@ private:
     const auto & final_point = trajectory.points.back();
     const double duration_s = static_cast<double>(final_point.time_from_start.sec) +
       static_cast<double>(final_point.time_from_start.nanosec) * 1e-9;
-    const auto deadline = std::chrono::steady_clock::now() +
+    const auto earliest_feedback_time = std::chrono::steady_clock::now() +
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(duration_s + 1.0));
+      std::chrono::duration<double>(duration_s));
+    const auto deadline = earliest_feedback_time +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(trajectory_feedback_timeout_s_));
     while (rclcpp::ok() && !cancel_requested_ && std::chrono::steady_clock::now() < deadline) {
+      if (std::chrono::steady_clock::now() >= earliest_feedback_time &&
+        TrajectoryFeedbackReached(trajectory.joint_names, final_point.positions))
+      {
+        PublishDiagnostic("REAL_ARM_TRAJECTORY_FEEDBACK_CONFIRMED");
+        return true;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    return !cancel_requested_;
+    if (!cancel_requested_) {
+      PublishDiagnostic("REAL_ARM_TRAJECTORY_FEEDBACK_TIMEOUT_OR_DEVIATION");
+    }
+    return false;
+  }
+
+  bool TrajectoryFeedbackReached(
+    const std::vector<std::string> & joint_names, const std::vector<double> & target_positions)
+  {
+    if (joint_names.size() != target_positions.size()) {
+      return false;
+    }
+    sensor_msgs::msg::JointState joint_state;
+    {
+      std::lock_guard<std::mutex> lock(feedback_mutex_);
+      const auto age_s = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - joint_state_received_time_).count();
+      if (joint_state_received_time_ == std::chrono::steady_clock::time_point{} ||
+        age_s > target_timeout_s_)
+      {
+        return false;
+      }
+      joint_state = latest_joint_state_;
+    }
+    for (std::size_t target_index = 0; target_index < joint_names.size(); ++target_index) {
+      const auto state_index = std::find(
+        joint_state.name.begin(), joint_state.name.end(), joint_names[target_index]);
+      if (state_index == joint_state.name.end()) {
+        return false;
+      }
+      const std::size_t index = static_cast<std::size_t>(
+        std::distance(joint_state.name.begin(), state_index));
+      if (index >= joint_state.position.size() ||
+        std::abs(joint_state.position[index] - target_positions[target_index]) >
+        trajectory_feedback_tolerance_rad_)
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  double LatestGripperPosition()
+  {
+    std::lock_guard<std::mutex> lock(feedback_mutex_);
+    return JointPosition(latest_gripper_feedback_, "gripper");
+  }
+
+  bool WaitForGripperMotion(double before_close)
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(gripper_feedback_timeout_s_));
+    while (rclcpp::ok() && !cancel_requested_ && std::chrono::steady_clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(feedback_mutex_);
+        const auto age_s = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - gripper_feedback_received_time_).count();
+        const double current = JointPosition(latest_gripper_feedback_, "gripper");
+        if (gripper_feedback_received_time_ != std::chrono::steady_clock::time_point{} &&
+          age_s <= target_timeout_s_ && std::isfinite(before_close) && std::isfinite(current) &&
+          std::abs(current - before_close) >= min_gripper_feedback_motion_rad_)
+        {
+          return true;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }
+
+  static double JointPosition(const sensor_msgs::msg::JointState & state, const std::string & name)
+  {
+    const auto iterator = std::find(state.name.begin(), state.name.end(), name);
+    if (iterator == state.name.end()) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const std::size_t index = static_cast<std::size_t>(
+      std::distance(state.name.begin(), iterator));
+    return index < state.position.size() ? state.position[index] :
+      std::numeric_limits<double>::quiet_NaN();
   }
 
   bool AttachCup()
@@ -1347,6 +1587,9 @@ private:
   int gripper_open_value_{50000};
   int gripper_close_value_{40000};
   double gripper_settle_s_{2.0};
+  std::string gripper_feedback_topic_;
+  double gripper_feedback_timeout_s_{3.0};
+  double min_gripper_feedback_motion_rad_{0.001};
   double top_down_pregrasp_clearance_m_{0.12};
   double top_down_grasp_clearance_m_{0.005};
   double top_down_grasp_yaw_{0.0};
@@ -1359,6 +1602,10 @@ private:
   double diagonal_grasp_lift_m_{0.04};
   double pregrasp_standoff_m_{0.16};
   double grasp_depth_m_{0.08};
+  double approach_microstep_m_{0.008};
+  int approach_max_steps_{20};
+  double approach_prediction_horizon_s_{0.08};
+  double approach_max_target_speed_m_s_{0.30};
   double cartesian_eef_step_m_{0.005};
   double linear_approach_velocity_scaling_{0.025};
   double lift_distance_m_{0.10};
@@ -1369,6 +1616,8 @@ private:
   double position_tolerance_{0.01};
   double orientation_tolerance_{0.05};
   double scene_wait_s_{10.0};
+  double trajectory_feedback_tolerance_rad_{0.04};
+  double trajectory_feedback_timeout_s_{12.0};
   std::string visual_state_topic_;
   std::string scene_ready_topic_;
   std::string state_topic_;
@@ -1380,6 +1629,7 @@ private:
 
   std::mutex state_mutex_;
   std::mutex target_mutex_;
+  std::mutex feedback_mutex_;
   std::thread worker_;
   std::atomic_bool cancel_requested_{false};
   bool worker_active_{false};
@@ -1388,15 +1638,23 @@ private:
   bool attached_{false};
   moveit_msgs::msg::CollisionObject cached_cup_;
   geometry_msgs::msg::PointStamped target_point_camera_;
+  geometry_msgs::msg::PointStamped target_point_reference_;
+  geometry_msgs::msg::PointStamped previous_target_point_reference_;
   geometry_msgs::msg::Vector3Stamped target_size_;
   std::chrono::steady_clock::time_point target_point_received_time_{};
   std::chrono::steady_clock::time_point target_size_received_time_{};
   std::chrono::steady_clock::time_point target_error_received_time_{};
   std::chrono::steady_clock::time_point target_valid_received_time_{};
   std::chrono::steady_clock::time_point depth_valid_received_time_{};
+  std::chrono::steady_clock::time_point target_reference_received_time_{};
+  std::chrono::steady_clock::time_point previous_target_reference_received_time_{};
+  std::chrono::steady_clock::time_point joint_state_received_time_{};
+  std::chrono::steady_clock::time_point gripper_feedback_received_time_{};
   double target_error_ratio_{1.0};
   bool target_valid_{false};
   bool depth_valid_{false};
+  sensor_msgs::msg::JointState latest_joint_state_;
+  sensor_msgs::msg::JointState latest_gripper_feedback_;
 
   std::shared_ptr<MoveGroupInterface> arm_;
   std::shared_ptr<MoveGroupInterface> gripper_;
@@ -1417,6 +1675,8 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_error_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_valid_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr depth_valid_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr gripper_feedback_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr cup_follow_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;
