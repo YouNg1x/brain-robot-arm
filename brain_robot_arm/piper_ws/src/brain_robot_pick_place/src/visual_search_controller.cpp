@@ -297,11 +297,9 @@ private:
         error_y_px_ = message->vector.y;
         target_error_ratio_ = message->vector.z;
         error_received_time_ = SteadyClock::now();
-        const double alignment_ratio = candidate_only_alignment_ && !target_valid_ ?
-          candidate_error_ratio_ : target_error_ratio_;
         if ((state_ == ControlState::ALIGN || state_ == ControlState::LEVEL_ALIGN ||
-          state_ == ControlState::FINAL_ALIGN) && (target_valid_ || candidate_only_alignment_) &&
-          alignment_ratio <= target_acquire_error_ratio_)
+          state_ == ControlState::FINAL_ALIGN) && target_valid_ &&
+          target_error_ratio_ <= target_acquire_error_ratio_)
         {
           ++aligned_frames_;
         } else if (state_ == ControlState::ALIGN || state_ == ControlState::LEVEL_ALIGN ||
@@ -318,7 +316,6 @@ private:
           std::lock_guard<std::mutex> lock(mutex_);
           target_valid_ = message->data;
           if (target_valid_) {
-            candidate_only_alignment_ = false;
             ++target_valid_frames_;
             last_target_valid_time_ = SteadyClock::now();
             record_history = Fresh(target_point_received_time_, target_timeout_s_) &&
@@ -896,14 +893,6 @@ private:
       return;
     }
 
-    if (local && CandidateFreshLocked()) {
-      candidate_only_alignment_ = true;
-      aligned_frames_ = 0;
-      PublishControlDetailLocked("PHASE=ALIGN COLOR_CANDIDATE_REACQUIRE");
-      SetStateLocked(ControlState::ALIGN, "COLOR_CANDIDATE_REACQUIRE");
-      return;
-    }
-
     const double timeout = local ? local_search_timeout_s_ : search_timeout_s_;
     const double elapsed = std::chrono::duration<double>(SteadyClock::now() - search_start_time_).count();
     const bool search_complete = elapsed >= timeout || StepSearchLocked();
@@ -935,21 +924,11 @@ private:
   {
     if (TargetFreshLocked() && target_valid_frames_ >= target_acquire_frames_) {
       PublishZeroLocked();
-      candidate_only_alignment_ = false;
       aligned_frames_ = 0;
       PublishControlDetailLocked("PHASE=ALIGN TARGET_REACQUIRED_ON_LAST_PATH");
       SetStateLocked(ControlState::ALIGN, "TARGET_REACQUIRED_ON_LAST_PATH");
       return;
     }
-    if (CandidateFreshLocked()) {
-      candidate_only_alignment_ = true;
-      aligned_frames_ = 0;
-      PublishControlDetailLocked(
-        "PHASE=ALIGN COLOR_CANDIDATE_REACQUIRE_AFTER_PREDICTION");
-      SetStateLocked(ControlState::ALIGN, "COLOR_CANDIDATE_REACQUIRE_AFTER_PREDICTION");
-      return;
-    }
-
     const auto horizontal = CurrentJointLocked(horizontal_joint_);
     const auto vertical = CurrentJointLocked(vertical_joint_);
     if (!horizontal || !vertical) {
@@ -1128,13 +1107,12 @@ private:
   void HandleAlignLocked()
   {
     const bool confirmed = TargetFreshLocked();
-    const bool candidate = candidate_only_alignment_ && CandidateFreshLocked();
-    if (!confirmed && !candidate) {
+    if (!confirmed) {
       BeginLastPathReacquireLocked("TARGET_LOST_DURING_ALIGN");
       return;
     }
-    const double error_x = confirmed ? error_x_px_ : candidate_error_x_px_;
-    const double error_y = confirmed ? error_y_px_ : candidate_error_y_px_;
+    const double error_x = error_x_px_;
+    const double error_y = error_y_px_;
     const double horizontal_velocity = std::clamp(
       horizontal_error_sign_ * horizontal_kp_ * error_x,
       -align_joint_speed_limit_, align_joint_speed_limit_);
@@ -1144,12 +1122,6 @@ private:
     PublishAlignmentJointLocked(horizontal_velocity, vertical_velocity);
 
     if (aligned_frames_ >= align_stable_frames_) {
-      if (candidate_only_alignment_ && !confirmed) {
-        aligned_frames_ = 0;
-        PublishControlDetailLocked("PHASE=ALIGN COLOR_CANDIDATE_HOLD_FOR_CONFIRMATION");
-        return;
-      }
-      candidate_only_alignment_ = false;
       if (direct_grasp_after_align_) {
         aligned_frames_ = 0;
         PublishZeroLocked();
@@ -1182,7 +1154,6 @@ private:
     }
     if (target_error_ratio_ > target_acquire_error_ratio_) {
       aligned_frames_ = 0;
-      candidate_only_alignment_ = false;
       ResumeServoLocked();
       PublishControlDetailLocked("PHASE=ALIGN TARGET_SHIFT_AFTER_GRASP_READY");
       SetStateLocked(ControlState::ALIGN, "GRASP_READY_TARGET_SHIFT");
@@ -1324,7 +1295,6 @@ private:
     }
     target_valid_frames_ = 0;
     aligned_frames_ = 0;
-    candidate_only_alignment_ = false;
     InitializeSearchLocked(true, *horizontal, *vertical);
     SetStateLocked(ControlState::LOCAL_SEARCH, reason);
   }
@@ -1333,7 +1303,6 @@ private:
   {
     target_valid_frames_ = 0;
     aligned_frames_ = 0;
-    candidate_only_alignment_ = false;
     last_path_prediction_valid_ = false;
     last_path_reacquire_steps_ = 0;
     if (!InitializePredictedReacquireLocked()) {
@@ -1977,7 +1946,6 @@ private:
   SteadyTime candidate_error_received_time_{};
   bool target_valid_{false};
   bool candidate_valid_{false};
-  bool candidate_only_alignment_{false};
   bool reset_requested_{false};
   double error_x_px_{0.0};
   double error_y_px_{0.0};
