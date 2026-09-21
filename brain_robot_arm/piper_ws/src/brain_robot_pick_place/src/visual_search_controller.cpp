@@ -807,6 +807,9 @@ private:
         case ControlState::ALIGN:
           HandleAlignLocked();
           break;
+        case ControlState::GRASP_READY:
+          HandleGraspReadyLocked();
+          break;
         case ControlState::LEVEL_ALIGN:
           HandleLevelAlignLocked();
           break;
@@ -1095,6 +1098,26 @@ private:
       PublishControlDetailLocked(
         "PHASE=LEVEL_ALIGN J1=HOLD J2/J3=VISION J5=TO_NEGATIVE_ONLY");
       SetStateLocked(ControlState::LEVEL_ALIGN, "TARGET_ACQUIRED_LEVELING");
+    }
+  }
+
+  void HandleGraspReadyLocked()
+  {
+    // GRASP_READY is externally visible to the grasp executor, but it must
+    // not freeze visual tracking.  Keep Servo stopped while the target stays
+    // inside the acquisition tolerance; resume closed-loop alignment as soon
+    // as a fresh target moves outside it.
+    if (!TargetFreshLocked()) {
+      ResumeServoLocked();
+      BeginLastPathReacquireLocked("TARGET_LOST_AFTER_GRASP_READY");
+      return;
+    }
+    if (target_error_ratio_ > target_acquire_error_ratio_) {
+      aligned_frames_ = 0;
+      candidate_only_alignment_ = false;
+      ResumeServoLocked();
+      PublishControlDetailLocked("PHASE=ALIGN TARGET_SHIFT_AFTER_GRASP_READY");
+      SetStateLocked(ControlState::ALIGN, "GRASP_READY_TARGET_SHIFT");
     }
   }
 
@@ -1496,7 +1519,17 @@ private:
            state == ControlState::LAST_PATH_REACQUIRE ||
            state == ControlState::LOCAL_SEARCH || state == ControlState::ALIGN ||
            state == ControlState::LEVEL_ALIGN || state == ControlState::LEVEL_RECOVERY ||
-           state == ControlState::FINAL_ALIGN;
+           state == ControlState::FINAL_ALIGN || state == ControlState::GRASP_READY;
+  }
+
+  void ResumeServoLocked()
+  {
+    servo_status_seen_ = false;
+    servo_status_ = -1;
+    if (servo_start_client_->service_is_ready()) {
+      servo_start_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+    }
   }
 
   void StopLocked(ControlState final_state, const std::string & reason)

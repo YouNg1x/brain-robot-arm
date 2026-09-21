@@ -8,6 +8,8 @@
 `docs/superpowers/specs/2026-09-21-purple-cube-continuous-tracking-and-closed-loop-grasp-design.md`。
 该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。设计尚未实施；当前第一项是 A1，即 `GRASP_READY` 下的持续监视与目标偏移自动重新进入 `ALIGN`。
 
+2026-09-21 已完成 A1 的源码修改，尚未在 Ubuntu ROS 2 环境构建或实机验收：`GRASP_READY` 现在属于内部控制定时器的持续监视状态，但仍对外发布原名称，以保持按键 `2` 的抓取授权接口。目标仍在允许误差内时保持 Servo 停止；目标像素误差超过 `target_acquire_error_ratio` 时异步启动 Servo 并进入 `ALIGN`；目标失效时异步启动 Servo 并进入现有 `LAST_PATH_REACQUIRE`。本项没有改变最后路径的固定 J1/J5 偏移；三维目标历史与预测重捕获仍属于 A2/A3。
+
 ## 当前目标与安全边界
 
 当前目标是用实体 PiPER、Astra/Orbbec RGB-D 相机和 ROS 2：组件启动后按键 `1` 先执行六轴软件零点复位，再移动到观测姿态并搜索紫色正方体（`PURPLE_CUBE`）；检测到后低速居中；进入 `GRASP_READY` 后由按键 `2` 执行抓取。
