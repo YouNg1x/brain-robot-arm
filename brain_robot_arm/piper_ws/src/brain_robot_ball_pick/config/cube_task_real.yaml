@@ -134,7 +134,9 @@ active_scan_supervisor:
     planning_scene_topic: /monitored_planning_scene
     reference_frame: base_link
     camera_optical_frame: camera_color_optical_frame
-    map_timeout_s: 1.0
+    # MoveIt's self-filtered cloud currently arrives at about 1 Hz on the
+    # physical setup; allow normal transport jitter without declaring it stale.
+    map_timeout_s: 3.0
     joint_state_timeout_s: 0.30
     initial_observe_stable_frames: 3
     voxel_size_m: 0.03

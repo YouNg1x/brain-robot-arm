@@ -102,6 +102,7 @@ B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2
 - 同次验证发现并修复适配器在轨迹回调中使用 ROS 2 Python 日志位置参数导致的 `TypeError`；修复提交为 `4d3ce03`。此前该异常会使适配器退出，表现为有轨迹发布但没有 `/joint_commands`。
 - 当前一键脚本按键为：`1` 串行执行“六轴零点复位→观测姿态→搜寻→居中”，`2` 在 `GRASP_READY` 后执行抓取，`0` 立即执行六轴零点复位并在零点停住，`Ctrl+C` 才执行失能并退出。
 - 2026-09-20 已接入第一阶段点云规划基础：`cube_visual_search.launch.py` 加载 `sensors_3d_real.yaml`，MoveIt 通过 `/camera/depth/points` 使用 `PointCloudOctomapUpdater`，占据地图坐标系设为 `base_link`，过滤点云输出为 `/brain_robot_vision/filtered_points`。尚未完成 Ubuntu 实机编译、RViz 地图显示和机械臂自过滤验收。
+- 2026-09-21 实机验收确认 `/brain_robot_vision/filtered_points` 已由 `move_group` 发布，实际频率约 1 Hz；监督器的 `map_timeout_s` 已从 1.0 s 调整为 3.0 s，以覆盖真实点云传输抖动，避免把有效过滤点云误判为过期。
 
 ## 当前代码架构
 
