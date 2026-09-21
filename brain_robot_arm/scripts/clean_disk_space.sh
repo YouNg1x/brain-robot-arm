@@ -4,7 +4,6 @@
 set -Eeuo pipefail
 
 THRESHOLD_PERCENT="${DISK_CLEAN_THRESHOLD:-85}"
-ROTATED_LOG_LIMIT_MB="${DISK_ROTATED_LOG_LIMIT_MB:-200}"
 APP_LOG_LIMIT_MB="${DISK_APP_LOG_LIMIT_MB:-20}"
 APP_LOG_DIR="${BRAIN_ROBOT_LOG_DIR:-$HOME/brain_robot_logs}"
 
@@ -22,24 +21,26 @@ find "$APP_LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
   -size +"${APP_LOG_LIMIT_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
 
 echo "[2/4] 清理超大的轮转系统日志..."
-# syslog and kern.log are ordinary rsyslog files, not systemd journals. They
-# can grow to several GB, and journal vacuuming does not touch them. Truncate
-# matching active/rotated files above the configured limit; keep the files and
-# permissions so rsyslog/logrotate can continue normally.
-sudo find /var/log -maxdepth 1 -type f \
-  \( -name 'syslog*' -o -name 'kern.log*' \) \
-  -size "+${ROTATED_LOG_LIMIT_MB}M" -exec sh -c '
-    for log_file do
-      printf "清空轮转日志：%s (%s)\n" "$log_file" "$(du -h "$log_file" | cut -f1)"
-      truncate -s 0 "$log_file"
-    done
-  ' sh {} +
+MAINTENANCE_HELPER="/usr/local/sbin/brain-robot-log-maintenance"
+if [[ -x "$MAINTENANCE_HELPER" ]]; then
+  if sudo -n "$MAINTENANCE_HELPER"; then
+    echo "[系统日志] 已通过受限免密维护助手完成。"
+  else
+    echo "[系统日志] 维护助手执行失败；本脚本不会改用通用 sudo 或要求输入密码。"
+  fi
+else
+  echo "[系统日志] 未清理：尚未安装受限免密维护，且本脚本不会弹出 sudo 密码输入。"
+  echo "[系统日志] 首次执行：~/install_brain_robot_log_maintenance.sh"
+fi
 
-echo "[3/4] 压缩 systemd 日志到 200 MB..."
-sudo journalctl --vacuum-size=200M
+echo "[3/4] systemd 日志已包含在上一步受限维护中（若已安装）。"
 
 echo "[4/4] 清理 apt 缓存..."
-sudo apt clean
+if sudo -n apt clean; then
+  echo "[apt] 已清理缓存。"
+else
+  echo "[apt] 未清理：apt 缓存不在受限日志维护白名单内；如确有需要请手动执行 sudo apt clean。"
+fi
 
 after="$(usage_percent)"
 echo "清理后根分区使用率：${after}%"

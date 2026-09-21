@@ -6,7 +6,7 @@
 
 2026-09-21 已确认下一阶段设计，详见
 `docs/superpowers/specs/2026-09-21-purple-cube-continuous-tracking-and-closed-loop-grasp-design.md`。
-该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4、B1--B3、C1 与 D1--D4 的源码/配置修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
+该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4、B1--B3、C1、D1--D4 与 E1--E3 的源码/脚本修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
 
 `GRASP_READY` 现在属于内部控制定时器的持续监视状态，但仍对外发布原名称，以保持按键 `2` 的抓取授权接口。目标仍在允许误差内时保持 Servo 停止；目标像素误差超过 `target_acquire_error_ratio` 时重新启动 Servo 并进入 `ALIGN`；目标失效时进入预测重捕获而不是永久停住。
 
@@ -27,6 +27,12 @@ B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2
 - 原来的整段笛卡尔直线接近已替换为最多 20 个 8 mm 微步。每步根据最新 RGB-D 点和当前相机 TF 重建目标，目标变化过大时空间位移会被限幅为 8 mm；每个微步都使用带碰撞检查的 `computeCartesianPath`，执行后还须重新通过目标有效、深度质量、像素对齐和关节反馈检查。
 - 微步阶段对连续两帧 `base_link` 目标点估计速度；仅在速度不超过 0.30 m/s 时向前预测 0.08 秒，用于补偿相机/控制延迟。没有可用速度或速度异常时不盲目预测。
 - 闭爪后，执行器要求 `/joint_states_feedback` 的夹爪位置在 3 秒内改变至少 0.001 rad；未确认则不抬升。该反馈只证明夹爪动作，不是力传感器，尚不能证明方块一定被夹住。
+
+## E 阶段：日志与磁盘空间
+
+- `~/brain_robot_logs` 中每个应用日志默认不超过 20 MB，目录总量默认不超过 100 MB；一键脚本启动时和运行期间每 30 秒都会修剪，ROS 自身日志也固定在该目录。阈值可用 `BRAIN_ROBOT_LOG_MAX_MB` 与 `BRAIN_ROBOT_LOG_TOTAL_MAX_MB` 覆盖。
+- 启动前先运行无交互清理并检查根分区。默认根分区少于 2048 MB 时拒绝启动，防止相机/ROS 高频日志在几乎满盘时把整个系统拖死；阈值可用 `BRAIN_ROBOT_MIN_FREE_MB` 修改。
+- 安装更新后，首次执行 `~/install_brain_robot_log_maintenance.sh` 并输入一次管理员密码，即会安装受限免密维护助手。以后 `~/clean_disk_space.sh` 和一键流程只可免密清理超过 200 MB 的 `syslog*`/`kern.log*` 并压缩 journal；它不允许任意 sudo 命令，也不需要取消账户密码。
 
 ## 当前目标与安全边界
 
@@ -256,6 +262,14 @@ bash /mnt/hgfs/ub/brain_robot_arm/scripts/install_piper_cube_pick.sh
 ```
 
 该脚本会把共享目录中的两个 ROS 包复制到 `~/piper_ws`，重新编译，并安装一键脚本到 `~/start_brain_robot_cube_real.sh`。本次 TF 修复必须重新执行这一步后才会进入已安装的 launch 文件。
+
+首次配置系统日志自动维护（只需一次）：
+
+```bash
+~/install_brain_robot_log_maintenance.sh
+```
+
+该命令会要求输入一次当前账户密码；它只安装固定的日志维护助手，不会取消账户密码或授予通用免密 sudo。之后磁盘空间紧张时可直接执行 `~/clean_disk_space.sh`。
 
 ### 2. 启动实体保护流程
 

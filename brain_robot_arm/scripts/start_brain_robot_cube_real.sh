@@ -8,6 +8,8 @@ APP_WS="${BRAIN_ROBOT_WS:-$HOME/piper_ws}"
 CAMERA_WS="${BRAIN_ROBOT_CAMERA_WS:-$HOME/ros2_ws}"
 LOG_DIR="${BRAIN_ROBOT_LOG_DIR:-$HOME/brain_robot_logs}"
 LOG_MAX_MB="${BRAIN_ROBOT_LOG_MAX_MB:-20}"
+LOG_TOTAL_MAX_MB="${BRAIN_ROBOT_LOG_TOTAL_MAX_MB:-100}"
+MIN_FREE_MB="${BRAIN_ROBOT_MIN_FREE_MB:-2048}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-45}"
 PIDS=()
 LOG_GUARD_PID=""
@@ -64,33 +66,62 @@ wait_for() {
   fail "等待 $name 超时。"
 }
 
+trim_application_logs() {
+  find "$LOG_DIR" -type f -name '*.log' -mtime +3 -delete 2>/dev/null || true
+  find "$LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
+    -size +"${LOG_MAX_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
+  local total_kb
+  total_kb=$(du -sk "$LOG_DIR" 2>/dev/null | awk '{print $1}')
+  while [[ "${total_kb:-0}" -gt $((LOG_TOTAL_MAX_MB * 1024)) ]]; do
+    local oldest
+    oldest=$(find "$LOG_DIR" -type f -name '*.log*' -printf '%T@ %p\n' 2>/dev/null |
+      sort -n | head -n 1 | cut -d' ' -f2-)
+    [[ -n "$oldest" ]] || break
+    # Do not unlink a process' current log: an unlinked-but-open file still
+    # occupies disk space. Truncation preserves the inode and releases space.
+    truncate -s 0 -- "$oldest" 2>/dev/null || break
+    total_kb=$(du -sk "$LOG_DIR" 2>/dev/null | awk '{print $1}')
+  done
+}
+
 prepare_logs() {
   mkdir -p "$LOG_DIR"
   export ROS_LOG_DIR="$LOG_DIR/ros"
   mkdir -p "$ROS_LOG_DIR"
   # Keep startup logs useful without allowing repeated ROS output to consume
   # the VM disk.  The cleanup utility performs the same maintenance on demand.
-  find "$LOG_DIR" -type f -name '*.log' -mtime +3 -delete 2>/dev/null || true
-  find "$LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
-    -size +"${LOG_MAX_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
+  trim_application_logs
 }
 
 start_log_guard() {
   (
     while true; do
-      find "$LOG_DIR" -type f \( -name '*.log' -o -name '*.log.*' \) \
-        -size +"${LOG_MAX_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
-      # rsyslog can grow kern.log/syslog independently of ROS_LOG_DIR.  Only
-      # truncate when sudo credentials are already cached by this startup.
-      if sudo -n true 2>/dev/null; then
-        sudo -n find /var/log -maxdepth 1 -type f \
-          \( -name 'syslog*' -o -name 'kern.log*' \) \
-          -size +200M -exec truncate -s 0 {} \; 2>/dev/null || true
+      trim_application_logs
+      # System logs are maintained only by the fixed no-argument helper
+      # installed by install_brain_robot_log_maintenance.sh.
+      if [[ -x /usr/local/sbin/brain-robot-log-maintenance ]]; then
+        sudo -n /usr/local/sbin/brain-robot-log-maintenance >/dev/null 2>&1 || true
       fi
       sleep 30
     done
   ) &
   LOG_GUARD_PID="$!"
+}
+
+available_root_mb() {
+  df --output=avail -BM / | tail -n 1 | tr -dc '0-9'
+}
+
+check_disk_headroom() {
+  local available_mb usage
+  available_mb=$(available_root_mb)
+  usage=$(df --output=pcent / | tail -n 1 | tr -dc '0-9')
+  if (( available_mb < MIN_FREE_MB )); then
+    echo "[错误] 根分区仅剩 ${available_mb} MB（使用率 ${usage}%）；至少需要 ${MIN_FREE_MB} MB 才启动。"
+    echo "[提示] 先运行 ~/clean_disk_space.sh；如提示系统日志未清理，首次运行 ~/install_brain_robot_log_maintenance.sh。"
+    exit 1
+  fi
+  echo "[磁盘] 根分区可用 ${available_mb} MB（使用率 ${usage}%）。"
 }
 
 start_group() {
@@ -240,7 +271,8 @@ echo " PiPER 实体紫色方块视觉抓取（一键保护模式）"
 echo " 自动启动 CAN、PiPER 驱动、相机、MoveIt、Servo 和检测器"
 echo "=================================================="
 prepare_logs
-bash "$SCRIPT_DIR/clean_disk_space.sh" >/dev/null 2>&1 || true
+bash "$SCRIPT_DIR/clean_disk_space.sh" || true
+check_disk_headroom
 start_log_guard
 echo "[1/7] 检查并初始化实体 CAN/机械臂..."
 configure_can
