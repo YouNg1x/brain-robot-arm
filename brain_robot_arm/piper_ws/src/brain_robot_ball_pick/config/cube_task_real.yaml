@@ -36,8 +36,14 @@ visual_search_controller:
     search_bounds_relative_to_start: false
     local_horizontal_range: 0.08
     local_vertical_range: 0.12
-    last_path_horizontal_distance: 0.20
-    last_path_vertical_distance: 0.15
+    # On loss, reproject the recent base_link target history into the current
+    # wrist-camera frame. This replaces the former fixed J1/J5 direction
+    # jump with at most two bounded prediction-guided reacquisition moves.
+    last_path_prediction_horizon_s: 0.25
+    last_path_prediction_max_speed_m_s: 0.40
+    last_path_reacquire_max_joint_step_rad: 0.60
+    last_path_reacquire_max_steps: 2
+    last_path_min_predicted_depth_m: 0.05
     horizontal_search_speed: 0.135
     vertical_search_speed: 0.108
     joint_position_tolerance: 0.01

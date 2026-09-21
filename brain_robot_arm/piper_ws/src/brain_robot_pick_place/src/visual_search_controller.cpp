@@ -209,10 +209,16 @@ private:
       "full_search_vertical_range", 0.10);
     local_horizontal_range_ = ParameterOr<double>("local_horizontal_range", 0.08);
     local_vertical_range_ = ParameterOr<double>("local_vertical_range", 0.06);
-    last_path_horizontal_distance_ = ParameterOr<double>(
-      "last_path_horizontal_distance", 0.20);
-    last_path_vertical_distance_ = ParameterOr<double>(
-      "last_path_vertical_distance", 0.15);
+    last_path_prediction_horizon_s_ = ParameterOr<double>(
+      "last_path_prediction_horizon_s", 0.25);
+    last_path_prediction_max_speed_m_s_ = ParameterOr<double>(
+      "last_path_prediction_max_speed_m_s", 0.40);
+    last_path_reacquire_max_joint_step_rad_ = ParameterOr<double>(
+      "last_path_reacquire_max_joint_step_rad", 0.60);
+    last_path_reacquire_max_steps_ = ParameterOr<int>(
+      "last_path_reacquire_max_steps", 2);
+    last_path_min_predicted_depth_m_ = ParameterOr<double>(
+      "last_path_min_predicted_depth_m", 0.05);
     horizontal_search_speed_ = ParameterOr<double>("horizontal_search_speed", 0.12);
     vertical_search_speed_ = ParameterOr<double>("vertical_search_speed", 0.08);
     joint_position_tolerance_ = ParameterOr<double>("joint_position_tolerance", 0.01);
@@ -549,6 +555,11 @@ private:
       prepare_execution_timeout_s_ <= 0.0 ||
       target_acquire_error_ratio_ <= 0.0 || target_acquire_error_ratio_ > 1.0 ||
       align_stable_frames_ < 1 || target_history_window_s_ <= 0.0 ||
+      last_path_prediction_horizon_s_ < 0.0 ||
+      last_path_prediction_max_speed_m_s_ <= 0.0 ||
+      last_path_reacquire_max_joint_step_rad_ <= 0.0 ||
+      last_path_reacquire_max_steps_ < 1 ||
+      last_path_min_predicted_depth_m_ <= 0.0 ||
       target_history_reference_frame_.empty() || target_history_topic_.empty())
     {
       RCLCPP_ERROR(
@@ -930,8 +941,9 @@ private:
     if (CandidateFreshLocked()) {
       candidate_only_alignment_ = true;
       aligned_frames_ = 0;
-      PublishControlDetailLocked("PHASE=ALIGN COLOR_CANDIDATE_REACQUIRE");
-      SetStateLocked(ControlState::ALIGN, "COLOR_CANDIDATE_REACQUIRE");
+      PublishControlDetailLocked(
+        "PHASE=ALIGN COLOR_CANDIDATE_REACQUIRE_AFTER_PREDICTION");
+      SetStateLocked(ControlState::ALIGN, "COLOR_CANDIDATE_REACQUIRE_AFTER_PREDICTION");
       return;
     }
 
@@ -944,6 +956,14 @@ private:
     if (Reached(*horizontal, last_path_horizontal_target_) &&
       Reached(*vertical, last_path_vertical_target_))
     {
+      if (last_path_reacquire_steps_ < last_path_reacquire_max_steps_) {
+        if (UpdatePredictedReacquireTargetLocked()) {
+          return;
+        }
+        if (state_ == ControlState::FAULT) {
+          return;
+        }
+      }
       BeginLocalSearchLocked("LAST_PATH_REACQUIRE_FAILED");
       return;
     }
@@ -1308,27 +1328,123 @@ private:
 
   void BeginLastPathReacquireLocked(const std::string & reason)
   {
-    const auto horizontal = CurrentJointLocked(horizontal_joint_);
-    const auto vertical = CurrentJointLocked(vertical_joint_);
-    if (!horizontal || !vertical ||
-      (std::abs(last_horizontal_velocity_) < 1e-6 &&
-      std::abs(last_vertical_velocity_) < 1e-6))
-    {
-      BeginLocalSearchLocked("LAST_PATH_DIRECTION_UNAVAILABLE");
-      return;
-    }
     target_valid_frames_ = 0;
     aligned_frames_ = 0;
     candidate_only_alignment_ = false;
-    last_path_horizontal_target_ = std::clamp(
-      *horizontal + std::copysign(last_path_horizontal_distance_, last_horizontal_velocity_),
-      horizontal_search_min_, horizontal_search_max_);
-    last_path_vertical_target_ = std::clamp(
-      *vertical + std::copysign(last_path_vertical_distance_, last_vertical_velocity_),
-      vertical_search_min_, vertical_search_max_);
+    last_path_prediction_valid_ = false;
+    last_path_reacquire_steps_ = 0;
+    if (!InitializePredictedReacquireLocked()) {
+      BeginLocalSearchLocked("LAST_TARGET_HISTORY_UNAVAILABLE");
+      return;
+    }
+    if (!UpdatePredictedReacquireTargetLocked()) {
+      if (state_ != ControlState::FAULT) {
+        BeginLocalSearchLocked("LAST_TARGET_HISTORY_UNAVAILABLE");
+      }
+      return;
+    }
     SetStateLocked(ControlState::LAST_PATH_REACQUIRE, reason);
-    PublishControlDetailLocked(
-      "PHASE=LAST_PATH_REACQUIRE J1/J5=LAST_DIRECTION");
+  }
+
+  bool InitializePredictedReacquireLocked()
+  {
+    if (target_history_.size() < 2U) {
+      return false;
+    }
+    const auto & oldest = target_history_.front();
+    const auto & latest = target_history_.back();
+    const double latest_age_s = std::chrono::duration<double>(
+      SteadyClock::now() - latest.received_time).count();
+    const double elapsed_s = std::chrono::duration<double>(
+      latest.received_time - oldest.received_time).count();
+    if (latest_age_s > target_timeout_s_ || elapsed_s <= 1e-3 ||
+      latest.camera_point.header.frame_id.empty())
+    {
+      return false;
+    }
+
+    double velocity_x = (latest.reference_point.point.x - oldest.reference_point.point.x) / elapsed_s;
+    double velocity_y = (latest.reference_point.point.y - oldest.reference_point.point.y) / elapsed_s;
+    double velocity_z = (latest.reference_point.point.z - oldest.reference_point.point.z) / elapsed_s;
+    const double speed = std::sqrt(
+      velocity_x * velocity_x + velocity_y * velocity_y + velocity_z * velocity_z);
+    if (speed > last_path_prediction_max_speed_m_s_) {
+      const double scale = last_path_prediction_max_speed_m_s_ / speed;
+      velocity_x *= scale;
+      velocity_y *= scale;
+      velocity_z *= scale;
+    }
+
+    last_path_prediction_target_ = latest.reference_point;
+    last_path_prediction_target_.point.x += velocity_x * last_path_prediction_horizon_s_;
+    last_path_prediction_target_.point.y += velocity_y * last_path_prediction_horizon_s_;
+    last_path_prediction_target_.point.z += velocity_z * last_path_prediction_horizon_s_;
+    last_path_camera_frame_ = latest.camera_point.header.frame_id;
+    last_path_prediction_valid_ = true;
+    return true;
+  }
+
+  bool UpdatePredictedReacquireTargetLocked()
+  {
+    if (!last_path_prediction_valid_) {
+      return false;
+    }
+    const auto horizontal = CurrentJointLocked(horizontal_joint_);
+    const auto vertical = CurrentJointLocked(vertical_joint_);
+    if (!horizontal || !vertical) {
+      StopLocked(ControlState::FAULT, "LAST_PATH_JOINT_STATE_MISSING");
+      return false;
+    }
+
+    geometry_msgs::msg::PointStamped predicted_camera_point;
+    try {
+      const auto transform = tf_buffer_->lookupTransform(
+        last_path_camera_frame_, target_history_reference_frame_, tf2::TimePointZero);
+      tf2::doTransform(last_path_prediction_target_, predicted_camera_point, transform);
+    } catch (const tf2::TransformException & exception) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Predicted target transform to '%s' failed: %s",
+        last_path_camera_frame_.c_str(), exception.what());
+      return false;
+    }
+    if (!std::isfinite(predicted_camera_point.point.x) ||
+      !std::isfinite(predicted_camera_point.point.y) ||
+      !std::isfinite(predicted_camera_point.point.z) ||
+      predicted_camera_point.point.z < last_path_min_predicted_depth_m_)
+    {
+      return false;
+    }
+
+    const double horizontal_delta = std::clamp(
+      horizontal_error_sign_ * std::atan2(
+        predicted_camera_point.point.x, predicted_camera_point.point.z),
+      -last_path_reacquire_max_joint_step_rad_, last_path_reacquire_max_joint_step_rad_);
+    const double vertical_delta = std::clamp(
+      vertical_error_sign_ * std::atan2(
+        predicted_camera_point.point.y, predicted_camera_point.point.z),
+      -last_path_reacquire_max_joint_step_rad_, last_path_reacquire_max_joint_step_rad_);
+    if (std::abs(horizontal_delta) <= joint_position_tolerance_ &&
+      std::abs(vertical_delta) <= joint_position_tolerance_)
+    {
+      return false;
+    }
+
+    last_path_horizontal_target_ = std::clamp(
+      *horizontal + horizontal_delta, horizontal_search_min_, horizontal_search_max_);
+    last_path_vertical_target_ = std::clamp(
+      *vertical + vertical_delta, vertical_search_min_, vertical_search_max_);
+    ++last_path_reacquire_steps_;
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+           << "PHASE=LAST_PATH_REACQUIRE step=" << last_path_reacquire_steps_
+           << "/" << last_path_reacquire_max_steps_
+           << " predicted_" << target_history_reference_frame_ << "_m=("
+           << last_path_prediction_target_.point.x << ","
+           << last_path_prediction_target_.point.y << ","
+           << last_path_prediction_target_.point.z << ")";
+    PublishControlDetailLocked(stream.str());
+    return true;
   }
 
   void InitializeSearchLocked(bool local, double horizontal_center, double vertical_center)
@@ -1427,12 +1543,6 @@ private:
       command.velocities.push_back(lock_horizon ? HorizonLockVelocityLocked(index) : 0.0);
     }
     joint_command_publisher_->publish(command);
-    if (std::abs(horizontal_velocity) > 1e-6) {
-      last_horizontal_velocity_ = horizontal_velocity;
-    }
-    if (std::abs(vertical_velocity) > 1e-6) {
-      last_vertical_velocity_ = vertical_velocity;
-    }
     PublishForwardAllowedLocked(false);
   }
 
@@ -1462,12 +1572,6 @@ private:
       command.velocities.push_back(HorizonLockVelocityLocked(index));
     }
     joint_command_publisher_->publish(command);
-    if (std::abs(horizontal_velocity) > 1e-6) {
-      last_horizontal_velocity_ = horizontal_velocity;
-    }
-    if (std::abs(vertical_velocity) > 1e-6) {
-      last_vertical_velocity_ = vertical_velocity;
-    }
     PublishForwardAllowedLocked(false);
   }
 
@@ -1765,8 +1869,11 @@ private:
   double full_search_vertical_range_{0.10};
   double local_horizontal_range_{0.08};
   double local_vertical_range_{0.06};
-  double last_path_horizontal_distance_{0.20};
-  double last_path_vertical_distance_{0.15};
+  double last_path_prediction_horizon_s_{0.25};
+  double last_path_prediction_max_speed_m_s_{0.40};
+  double last_path_reacquire_max_joint_step_rad_{0.60};
+  int last_path_reacquire_max_steps_{2};
+  double last_path_min_predicted_depth_m_{0.05};
   double horizontal_search_speed_{0.12};
   double vertical_search_speed_{0.08};
   double joint_position_tolerance_{0.01};
@@ -1774,8 +1881,10 @@ private:
   double local_search_timeout_s_{5.0};
   double last_path_horizontal_target_{0.0};
   double last_path_vertical_target_{0.0};
-  double last_horizontal_velocity_{0.0};
-  double last_vertical_velocity_{0.0};
+  geometry_msgs::msg::PointStamped last_path_prediction_target_;
+  std::string last_path_camera_frame_;
+  bool last_path_prediction_valid_{false};
+  int last_path_reacquire_steps_{0};
   double target_timeout_s_{0.60};
   double target_history_window_s_{0.40};
   double joint_state_timeout_s_{0.50};
