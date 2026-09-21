@@ -13,6 +13,7 @@ cube_detector:
     error_topic: /brain_robot_vision/pixel_error
     valid_topic: /brain_robot_vision/target_valid
     depth_valid_topic: /brain_robot_vision/depth_valid
+    depth_diagnostic_topic: /brain_robot_vision/depth_diagnostic
     input_reliability: reliable
 
     # OpenCV HSV hue is 0..179. These bounds are deliberately parameters:
@@ -41,3 +42,8 @@ cube_detector:
     max_depth_m: 3.0
     min_depth_samples: 10
     depth_erode_px: 1
+    # depth_valid is a grasp authorization, not just a nonzero depth sample.
+    # A colour/shape-valid cube remains trackable while this gate is false.
+    max_depth_mad_m: 0.012
+    max_depth_frame_delta_m: 0.030
+    required_depth_stable_frames: 3

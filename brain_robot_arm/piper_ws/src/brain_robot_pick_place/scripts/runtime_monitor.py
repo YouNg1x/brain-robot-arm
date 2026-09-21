@@ -9,7 +9,7 @@ from control_msgs.msg import JointJog
 from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool, Int8, String
 
 
@@ -46,10 +46,14 @@ class RuntimeMonitor(Node):
                                  lambda message: self.store('target_valid', message.data), reliable_qos)
         self.create_subscription(Bool, '/brain_robot_vision/depth_valid',
                                  lambda message: self.store('depth_valid', message.data), reliable_qos)
+        self.create_subscription(String, '/brain_robot_vision/depth_diagnostic',
+                                 lambda message: self.store('depth_diagnostic', message.data), state_qos)
         self.create_subscription(Vector3Stamped, '/brain_robot_vision/pixel_error',
                                  lambda message: self.store('pixel_error', message.vector), reliable_qos)
         self.create_subscription(PointStamped, '/brain_robot_vision/target_point_camera',
                                  lambda message: self.store('target_point', message), reliable_qos)
+        self.create_subscription(PointCloud2, '/brain_robot_vision/filtered_points',
+                                 lambda message: self.store('filtered_points', message), sensor_qos)
         self.create_subscription(JointState, '/joint_states',
                                  lambda message: self.store('joint_states', message), sensor_qos)
         self.create_subscription(Int8, '/servo_node/status',
@@ -104,6 +108,10 @@ class RuntimeMonitor(Node):
         print()
         print(f'视觉目标: target_valid={self.value("target_valid")}  '
               f'depth_valid={self.value("depth_valid")}')
+        print(f'深度抓取门: {self.value("depth_diagnostic")}  '
+              f'({self.age("depth_diagnostic")})')
+        print(f'碰撞点云: /brain_robot_vision/filtered_points  '
+              f'({self.age("filtered_points")})')
         error = self.values.get('pixel_error')
         if error is None:
             print('像素误差: --')

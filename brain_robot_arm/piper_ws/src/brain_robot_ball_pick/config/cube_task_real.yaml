@@ -103,6 +103,7 @@ grasp_lift_executor:
     camera_optical_frame: camera_color_optical_frame
     target_point_topic: /brain_robot_vision/target_point_camera
     target_size_topic: /brain_robot_vision/target_size
+    depth_valid_topic: /brain_robot_vision/depth_valid
     adaptive_size_enabled: true
     min_object_size_m: 0.01
     max_object_size_m: 0.25

@@ -104,6 +104,13 @@ public:
         target_valid_ = message->data;
         target_valid_received_time_ = std::chrono::steady_clock::now();
       });
+    depth_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      depth_valid_topic_, rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(target_mutex_);
+        depth_valid_ = message->data;
+        depth_valid_received_time_ = std::chrono::steady_clock::now();
+      });
     emergency_stop_subscription_ = create_subscription<std_msgs::msg::Bool>(
       emergency_stop_topic_, rclcpp::QoS(10),
       [this](const std_msgs::msg::Bool::SharedPtr message) {
@@ -143,6 +150,12 @@ public:
             response->success = false;
             response->message =
               "Real grasp requires real_grasp_enabled=true and current state GRASP_READY.";
+            return;
+          }
+          if (!DepthStillTrusted()) {
+            response->success = false;
+            response->message =
+              "Grasp requires a fresh, stable, unclipped RGB-D target; continue visual tracking.";
             return;
           }
           grasp_requested_ = true;
@@ -218,6 +231,8 @@ private:
       "target_point_topic", "/brain_robot_vision/target_point_camera");
     target_size_topic_ = ParameterOr<std::string>(
       "target_size_topic", "/brain_robot_vision/target_size");
+    depth_valid_topic_ = ParameterOr<std::string>(
+      "depth_valid_topic", "/brain_robot_vision/depth_valid");
     adaptive_size_enabled_ = ParameterOr<bool>("adaptive_size_enabled", false);
     min_object_size_m_ = ParameterOr<double>("min_object_size_m", 0.01);
     max_object_size_m_ = ParameterOr<double>("max_object_size_m", 0.25);
@@ -975,12 +990,24 @@ private:
     const auto target_age = std::chrono::duration<double>(now - target_point_received_time_).count();
     const auto error_age = std::chrono::duration<double>(now - target_error_received_time_).count();
     const auto valid_age = std::chrono::duration<double>(now - target_valid_received_time_).count();
+    const auto depth_valid_age = std::chrono::duration<double>(now - depth_valid_received_time_).count();
     return target_point_received_time_ != std::chrono::steady_clock::time_point{} &&
            target_error_received_time_ != std::chrono::steady_clock::time_point{} &&
            target_valid_received_time_ != std::chrono::steady_clock::time_point{} &&
+           depth_valid_received_time_ != std::chrono::steady_clock::time_point{} &&
            target_age <= target_timeout_s_ && error_age <= target_timeout_s_ &&
-           valid_age <= target_timeout_s_ && target_valid_ &&
+           valid_age <= target_timeout_s_ && depth_valid_age <= target_timeout_s_ &&
+           target_valid_ && depth_valid_ &&
            target_error_ratio_ <= grasp_alignment_error_ratio_;
+  }
+
+  bool DepthStillTrusted()
+  {
+    std::lock_guard<std::mutex> lock(target_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_s = std::chrono::duration<double>(now - depth_valid_received_time_).count();
+    return depth_valid_received_time_ != std::chrono::steady_clock::time_point{} &&
+      age_s <= target_timeout_s_ && depth_valid_;
   }
 
   void RequestVisualReacquire(const std::string & reason)
@@ -1308,6 +1335,7 @@ private:
   std::string camera_optical_frame_;
   std::string target_point_topic_;
   std::string target_size_topic_;
+  std::string depth_valid_topic_;
   bool adaptive_size_enabled_{false};
   double min_object_size_m_{0.01};
   double max_object_size_m_{0.25};
@@ -1365,8 +1393,10 @@ private:
   std::chrono::steady_clock::time_point target_size_received_time_{};
   std::chrono::steady_clock::time_point target_error_received_time_{};
   std::chrono::steady_clock::time_point target_valid_received_time_{};
+  std::chrono::steady_clock::time_point depth_valid_received_time_{};
   double target_error_ratio_{1.0};
   bool target_valid_{false};
+  bool depth_valid_{false};
 
   std::shared_ptr<MoveGroupInterface> arm_;
   std::shared_ptr<MoveGroupInterface> gripper_;
@@ -1386,6 +1416,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_size_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_error_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_valid_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr depth_valid_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr cup_follow_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;

@@ -23,6 +23,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
 
 class CupDetectorNode final : public rclcpp::Node
 {
@@ -56,6 +57,8 @@ public:
       "candidate_valid_topic", "/brain_robot_vision/color_candidate_valid");
     depth_valid_topic_ = declare_parameter<std::string>(
       "depth_valid_topic", "/brain_robot_vision/depth_valid");
+    depth_diagnostic_topic_ = declare_parameter<std::string>(
+      "depth_diagnostic_topic", "/brain_robot_vision/depth_diagnostic");
     input_reliability_ = declare_parameter<std::string>("input_reliability", "reliable");
 
     hue_low_1_ = declare_parameter<int>("hue_low_1", 0);
@@ -81,6 +84,9 @@ public:
     max_depth_m_ = declare_parameter<double>("max_depth_m", 3.0);
     min_depth_samples_ = declare_parameter<int>("min_depth_samples", 20);
     depth_erode_px_ = declare_parameter<int>("depth_erode_px", 3);
+    max_depth_mad_m_ = declare_parameter<double>("max_depth_mad_m", 0.012);
+    max_depth_frame_delta_m_ = declare_parameter<double>("max_depth_frame_delta_m", 0.030);
+    required_depth_stable_frames_ = declare_parameter<int>("required_depth_stable_frames", 3);
     clamp_parameters();
 
     const auto output_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
@@ -100,6 +106,8 @@ public:
       candidate_valid_topic_, output_qos);
     depth_valid_publisher_ = create_publisher<std_msgs::msg::Bool>(
       depth_valid_topic_, output_qos);
+    depth_diagnostic_publisher_ = create_publisher<std_msgs::msg::String>(
+      depth_diagnostic_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
 
     rclcpp::QoS input_qos(rclcpp::KeepLast(10));
     if (input_reliability_ == "best_effort") {
@@ -172,6 +180,9 @@ private:
     max_depth_m_ = std::max(min_depth_m_ + 0.001, max_depth_m_);
     min_depth_samples_ = std::max(1, min_depth_samples_);
     depth_erode_px_ = std::max(0, depth_erode_px_);
+    max_depth_mad_m_ = std::max(0.0, max_depth_mad_m_);
+    max_depth_frame_delta_m_ = std::max(0.0, max_depth_frame_delta_m_);
+    required_depth_stable_frames_ = std::max(1, required_depth_stable_frames_);
     if (input_reliability_ != "reliable" && input_reliability_ != "best_effort") {
       RCLCPP_WARN(
         get_logger(), "Unknown input_reliability '%s'; using reliable.",
@@ -199,6 +210,13 @@ private:
     std_msgs::msg::Bool message;
     message.data = valid;
     depth_valid_publisher_->publish(message);
+  }
+
+  void publish_depth_diagnostic(const std::string & diagnostic) const
+  {
+    std_msgs::msg::String message;
+    message.data = diagnostic;
+    depth_diagnostic_publisher_->publish(message);
   }
 
   void publish_candidate_valid(bool valid) const
@@ -236,8 +254,13 @@ private:
   struct DepthResult
   {
     bool valid{false};
+    bool dispersion_valid{false};
+    bool frame_delta_valid{false};
     double meters{std::numeric_limits<double>::quiet_NaN()};
+    double median_absolute_deviation_m{std::numeric_limits<double>::quiet_NaN()};
+    double frame_delta_m{std::numeric_limits<double>::quiet_NaN()};
     std::size_t sample_count{0};
+    int stable_frame_count{0};
   };
 
   DepthResult measure_depth(
@@ -321,7 +344,70 @@ private:
     std::nth_element(valid_depths.begin(), middle, valid_depths.end());
     result.meters = *middle;
     result.valid = true;
+    std::vector<double> absolute_deviations;
+    absolute_deviations.reserve(valid_depths.size());
+    for (const double meters : valid_depths) {
+      absolute_deviations.push_back(std::abs(meters - result.meters));
+    }
+    const auto deviation_middle = absolute_deviations.begin() +
+      static_cast<std::ptrdiff_t>(absolute_deviations.size() / 2);
+    std::nth_element(
+      absolute_deviations.begin(), deviation_middle, absolute_deviations.end());
+    result.median_absolute_deviation_m = *deviation_middle;
+    result.dispersion_valid = result.median_absolute_deviation_m <= max_depth_mad_m_;
     return result;
+  }
+
+  void update_depth_temporal_quality(DepthResult & depth)
+  {
+    if (!depth.valid) {
+      previous_depth_valid_ = false;
+      depth_stable_frame_count_ = 0;
+      return;
+    }
+
+    depth.frame_delta_m = previous_depth_valid_ ?
+      std::abs(depth.meters - previous_depth_m_) : 0.0;
+    depth.frame_delta_valid = !previous_depth_valid_ ||
+      depth.frame_delta_m <= max_depth_frame_delta_m_;
+    previous_depth_m_ = depth.meters;
+    previous_depth_valid_ = true;
+    if (depth.dispersion_valid && depth.frame_delta_valid) {
+      ++depth_stable_frame_count_;
+    } else {
+      depth_stable_frame_count_ = 0;
+    }
+    depth.stable_frame_count = depth_stable_frame_count_;
+  }
+
+  void reset_depth_temporal_quality()
+  {
+    previous_depth_valid_ = false;
+    depth_stable_frame_count_ = 0;
+  }
+
+  std::string depth_quality_reason(
+    const DepthResult & depth, bool clipped, bool camera_info_ready) const
+  {
+    if (!depth.valid) {
+      return "DEPTH_REJECTED_INSUFFICIENT_SAMPLES";
+    }
+    if (!depth.dispersion_valid) {
+      return "DEPTH_REJECTED_HIGH_MEDIAN_ABSOLUTE_DEVIATION";
+    }
+    if (!depth.frame_delta_valid) {
+      return "DEPTH_REJECTED_FRAME_TO_FRAME_JUMP";
+    }
+    if (depth.stable_frame_count < required_depth_stable_frames_) {
+      return "DEPTH_REJECTED_WAITING_FOR_STABLE_FRAMES";
+    }
+    if (clipped) {
+      return "DEPTH_REJECTED_TARGET_CLIPPED";
+    }
+    if (!camera_info_ready) {
+      return "DEPTH_REJECTED_CAMERA_INFO_UNAVAILABLE";
+    }
+    return "DEPTH_GRASP_ALLOWED";
   }
 
   void on_images(
@@ -371,8 +457,8 @@ private:
     cv::findContours(target_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
     // Keep a color-only candidate stream for fast reacquisition. It is never
-    // used as the confirmed grasp target; shape and depth checks below still
-    // control target_valid.
+    // used as the confirmed grasp target; shape checks below control target_valid
+    // and the independent depth quality gate controls grasp authorization.
     double candidate_area = 0.0;
     std::vector<cv::Point> candidate_contour;
     for (const auto & contour : contours) {
@@ -442,6 +528,8 @@ private:
     if (largest_contour.empty()) {
       publish_valid(false);
       publish_depth_valid(false);
+      reset_depth_temporal_quality();
+      publish_depth_diagnostic("DEPTH_REJECTED_TARGET_LOST");
       cv::putText(
         debug_image, "TARGET LOST", cv::Point(20, 35),
         cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
@@ -453,6 +541,8 @@ private:
     if (std::abs(moments.m00) < 1e-6) {
       publish_valid(false);
       publish_depth_valid(false);
+      reset_depth_temporal_quality();
+      publish_depth_diagnostic("DEPTH_REJECTED_INVALID_TARGET_MOMENT");
       publish_debug_image(rgb_message->header, debug_image);
       return;
     }
@@ -474,7 +564,12 @@ private:
     cv::Mat selected_mask = cv::Mat::zeros(target_mask.size(), CV_8UC1);
     std::vector<std::vector<cv::Point>> selected_contours{largest_contour};
     cv::drawContours(selected_mask, selected_contours, 0, cv::Scalar(255), cv::FILLED);
-    const DepthResult depth = measure_depth(depth_message, selected_mask, target_box);
+    DepthResult depth = measure_depth(depth_message, selected_mask, target_box);
+    update_depth_temporal_quality(depth);
+    const bool depth_grasp_allowed = depth.valid && depth.dispersion_valid &&
+      depth.frame_delta_valid && depth.stable_frame_count >= required_depth_stable_frames_ &&
+      !clipped && camera_info_ready_;
+    const std::string depth_reason = depth_quality_reason(depth, clipped, camera_info_ready_);
 
     geometry_msgs::msg::PointStamped target_message;
     target_message.header = rgb_message->header;
@@ -514,7 +609,10 @@ private:
     error_message.vector.z = normalized_error;
     error_publisher_->publish(error_message);
     publish_valid(true);
-    publish_depth_valid(depth.valid);
+    // target_valid intentionally remains a colour/shape signal so visual tracking can
+    // continue while depth is unstable. depth_valid is the stricter grasp authorization.
+    publish_depth_valid(depth_grasp_allowed);
+    publish_depth_diagnostic(depth_reason);
 
     const cv::Scalar yellow(0, 255, 255);
     const cv::Scalar cyan(255, 255, 0);
@@ -541,14 +639,23 @@ private:
     if (depth.valid) {
       depth_status << std::fixed << std::setprecision(3)
                    << "DEPTH=" << depth.meters << " m"
-                   << " samples=" << depth.sample_count;
+                   << " samples=" << depth.sample_count
+                   << " MAD=" << depth.median_absolute_deviation_m
+                   << " dZ=" << depth.frame_delta_m
+                   << " stable=" << depth.stable_frame_count << "/"
+                   << required_depth_stable_frames_;
     } else {
       depth_status << "DEPTH INVALID samples=" << depth.sample_count;
     }
     cv::putText(
       debug_image, depth_status.str(), cv::Point(20, 65),
       cv::FONT_HERSHEY_SIMPLEX, 0.65,
-      depth.valid ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), 2);
+      depth_grasp_allowed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255), 2);
+    if (!depth_grasp_allowed) {
+      cv::putText(
+        debug_image, depth_reason, cv::Point(20, 140),
+        cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 255), 1);
+    }
     if (depth.valid && camera_info_ready_) {
       std::ostringstream size_status;
       size_status << std::fixed << std::setprecision(3)
@@ -575,6 +682,7 @@ private:
   std::string candidate_error_topic_;
   std::string candidate_valid_topic_;
   std::string depth_valid_topic_;
+  std::string depth_diagnostic_topic_;
   std::string input_reliability_;
 
   int hue_low_1_;
@@ -599,11 +707,17 @@ private:
   double max_depth_m_;
   int min_depth_samples_;
   int depth_erode_px_;
+  double max_depth_mad_m_;
+  double max_depth_frame_delta_m_;
+  int required_depth_stable_frames_;
   double camera_fx_{0.0};
   double camera_fy_{0.0};
   double camera_cx_{0.0};
   double camera_cy_{0.0};
   bool camera_info_ready_{false};
+  double previous_depth_m_{0.0};
+  bool previous_depth_valid_{false};
+  int depth_stable_frame_count_{0};
 
   bool has_previous_validity_{false};
   bool previous_valid_{false};
@@ -625,6 +739,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr candidate_error_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr candidate_valid_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr depth_valid_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr depth_diagnostic_publisher_;
 };
 
 int main(int argc, char * argv[])

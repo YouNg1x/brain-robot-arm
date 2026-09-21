@@ -6,13 +6,20 @@
 
 2026-09-21 已确认下一阶段设计，详见
 `docs/superpowers/specs/2026-09-21-purple-cube-continuous-tracking-and-closed-loop-grasp-design.md`。
-该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4 和 B1--B3 的源码/配置修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
+该文档定义持续 TRACK_HOLD、最后可信视觉历史重捕获、颜色候选重捕获、视觉阶段前进限制、深度置信度、点云碰撞和闭环微步抓取的实施顺序。2026-09-21 已完成 A1--A4、B1--B3 与 C1 的源码/配置修改，尚未在 Ubuntu ROS 2 环境构建或实机验收。
 
 `GRASP_READY` 现在属于内部控制定时器的持续监视状态，但仍对外发布原名称，以保持按键 `2` 的抓取授权接口。目标仍在允许误差内时保持 Servo 停止；目标像素误差超过 `target_acquire_error_ratio` 时重新启动 Servo 并进入 `ALIGN`；目标失效时进入预测重捕获而不是永久停住。
 
-视觉控制器保存最近 0.40 秒的可信目标：相机三维点、转换到 `base_link` 的三维点、像素误差、对应六轴反馈和单调时间；诊断话题 `/brain_robot_visual_control/target_history` 输出样本数量、最近点年龄、相机/基座位置、窗口速度估计、像素误差和已保存关节数量。目标丢失时，控制器以该历史的末点和速度估计生成预测点，将其投影到当前腕部相机，并最多执行两步受限的 J1/J5 重获；目标历史、TF 或预测深度不可用时则转入局部搜索。当前检测器仅在自身深度检查通过后才发布该三维点；针对反光、黑色表面的深度稳定性质量门仍属于 C1，尚未实现。
+视觉控制器保存最近 0.40 秒的可信目标：相机三维点、转换到 `base_link` 的三维点、像素误差、对应六轴反馈和单调时间；诊断话题 `/brain_robot_visual_control/target_history` 输出样本数量、最近点年龄、相机/基座位置、窗口速度估计、像素误差和已保存关节数量。目标丢失时，控制器以该历史的末点和速度估计生成预测点，将其投影到当前腕部相机，并最多执行两步受限的 J1/J5 重获；目标历史、TF 或预测深度不可用时则转入局部搜索。检测器现在对掩膜内深度使用有效样本数、MAD、帧间中位数变化、连续稳定帧与图像裁剪五项质量门；深度失败不会撤销颜色/形状 `target_valid`，所以视觉跟踪继续，但 `/brain_robot_vision/depth_valid=false` 会阻止抓取执行器启动或继续接近。诊断话题 `/brain_robot_vision/depth_diagnostic` 会报告拒绝原因；其默认阈值与实体效果仍需实机验收。
 
 B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2/J3 对齐辅助，清空 J4/J6 水平锁列表，控制器也允许该列表为空。原先无订阅者的 `/brain_robot_visual_control/forward_allowed` 已删除。新增 `/brain_robot_visual_control/command_diagnostic`，报告每条视觉 `JointJog` 的状态、来源、关节和速度，并记录零点复位/观测姿态轨迹的最终关节目标；`runtime_monitor.py` 已显示该诊断。`piper_servo_real.yaml` 已将 `check_collisions` 改为 `true`，但点云是否真实进入 MoveIt 场景、Servo 是否据此减速或硬停，仍必须由 Ubuntu 实机验证。
+
+## C 阶段：深度质量与点云验收
+
+- 检测器输出的 `/brain_robot_vision/depth_valid` 现表示“允许以当前 RGB-D 点进入抓取”，不再只是“深度图中找到非零样本”。默认需要最少 10 个样本、MAD ≤ 0.012 m、相邻帧深度变化 ≤ 0.030 m、连续 3 帧稳定、目标未裁剪且相机内参已到达。
+- `/brain_robot_vision/target_valid=true` 与 `depth_valid=false` 是预期的中间状态：紫色方块颜色/形状可信，机械臂可以继续搜寻或居中，但按 `2` 必须被拒绝。调试图与只读监控会显示 `/brain_robot_vision/depth_diagnostic`，例如 `DEPTH_REJECTED_FRAME_TO_FRAME_JUMP` 或 `DEPTH_REJECTED_HIGH_MEDIAN_ABSOLUTE_DEVIATION`。
+- 点云配置已指向 `/camera/depth/points`，其自过滤输出为 `/brain_robot_vision/filtered_points`。尚未在实体 RViz 中确认桌面点已进入 Octomap 或机械臂自身被正确滤除；这不是能用静态源码替代的结论。
+- 现阶段不训练模型：固定腕部相机、单一紫色方块、有限光照时，HSV 阈值、时间滤波和深度质量门更直接、可解释且运行成本低。只有出现大量相似紫色干扰、光照跨度大、频繁遮挡或多类别目标时才采集真实 RGB-D 数据训练检测/分割模型；训练也不能修复黑色或镜面材质的深度缺失。
 
 ## 当前目标与安全边界
 

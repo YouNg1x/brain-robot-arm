@@ -1,7 +1,7 @@
 # PiPER 紫色方块持续跟踪与闭环抓取设计
 
 日期：2026-09-21  
-状态：A 阶段和 B 阶段源码已完成；待 Ubuntu 构建和实机验收
+状态：A、B 与 C1 源码已完成；C2 需 Ubuntu/RViz 实机验收
 
 ## 背景与已确认事实
 
@@ -78,16 +78,21 @@
 
 ### C. 感知与深度置信度
 
-- [ ] **C1：增加深度质量门。**
+- [x] **C1：增加深度质量门。**（源码已实现；待 Ubuntu 构建和实机验收）
   - 目标必须满足有效样本数、深度中位数离散度、连续帧深度变化和非裁剪条件。
   - 颜色/形状有效但深度不可信时，允许视觉跟踪，不允许接近或抓取。
+  - 检测器现以掩膜内深度中位数、median absolute deviation（MAD）、相邻帧中位数变化和连续稳定帧数计算严格的 `/brain_robot_vision/depth_valid`。真机默认门槛是最少 10 个样本、MAD 不大于 12 mm、相邻帧变化不大于 30 mm、连续 3 帧稳定，且方块不能被图像边缘裁剪。
+  - `/brain_robot_vision/target_valid` 保持颜色/形状确认语义，故深度门失败时视觉控制器仍可搜索、居中和重新跟踪；`/brain_robot_vision/depth_valid=false` 会阻止 `/grasp_lift_executor/execute`，而抓取过程中门失效也会返回视觉重获。
+  - 新增瞬态诊断 `/brain_robot_vision/depth_diagnostic`，以及调试画面的 `MAD`、`dZ`、稳定帧和拒绝原因；`runtime_monitor.py` 同时显示该诊断。
   - 验收：黑色、镜面或强反光背景引发深度跳变时，系统拒绝抓取并报告原因。
 
-- [ ] **C2：确认点云碰撞模型。**
+- [ ] **C2：确认点云碰撞模型。**（配置已存在；必须实机验证）
   - 验证 `/camera/depth/points` 到 `base_link` 的坐标一致性、Octomap 更新和机械臂自过滤。
+  - 现有启动文件已使用 `PointCloudOctomapUpdater`，输入 `/camera/depth/points`、输出自过滤后点云 `/brain_robot_vision/filtered_points`，地图坐标系为 `base_link`；这只是接入条件，并不证明规划场景实际收到了环境点。
+  - Ubuntu 验收命令：`timeout 5s ros2 topic hz /camera/depth/points`、`timeout 5s ros2 topic hz /brain_robot_vision/filtered_points`，以及 `timeout 8s ros2 run tf2_ros tf2_echo base_link camera_color_optical_frame`。随后在 RViz 添加 Planning Scene 与 `/brain_robot_vision/filtered_points`，放置桌面障碍并观察 Octomap/规划路径；不能拿电脑作为撞击测试物。
   - 验收：RViz/Planning Scene 中能看到桌面类障碍，规划路径会避开它们。
 
-- [ ] **C3：训练决策。**
+- [x] **C3：训练决策。**（工程决策已记录）
   - 固定相机、紫色方块与有限光照下，优先使用 HSV 自适应、时间滤波和深度质量门，不训练模型。
   - 当存在大量相似紫色干扰、光照跨度大、遮挡频繁或需要多类别物体时，再采集真实 RGB-D 数据训练检测/分割模型。
   - 即使引入训练模型，黑色/反光材质的深度问题仍由深度质量门和点云处理解决。
@@ -135,4 +140,4 @@
 
 ## 当前下一项
 
-**A、B 阶段已完成源码修改。下一步是在 Ubuntu 构建，并完成“首次居中后移动方块”“方块短暂出画”“视觉命令仅含 J1/J5”和“Servo 已连接带点云的 Planning Scene”的实机验收；通过后才进入 C 阶段的深度置信度。**
+**C1 已完成源码修改。下一步是在 Ubuntu 构建，完成深度质量拒绝、首次居中后移动方块、方块短暂出画、视觉命令仅含 J1/J5，以及点云 Planning Scene 的实机验收；通过后才进入 D 阶段的闭环微步抓取。**
