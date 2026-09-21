@@ -244,6 +244,8 @@ F2 的第一部分已实现：监督器仅从 MoveIt 已自过滤的 `/brain_rob
 
 `MAP_INPUT_READY` 仅表示输入与体素证据新鲜，**并不表示任何机械臂轨迹已经通过碰撞认证**。下一步要基于已安装 PiPER URDF 的真实连杆碰撞几何，对候选观测/抓取轨迹逐采样检查：占用相交拒绝，未被射线确认的未知空间也拒绝。该部分完成并在 Ubuntu/Humble 构建通过前，监督器不会接管或放行实体运动。
 
+F2 的第二部分会在启动后从与 MoveIt 相同的 `robot_description` 加载 PiPER 碰撞模型，并在诊断中输出 `collision_model` 与 `collision_links`。仓库中的实际模型为 `base_link`、主连杆、`gripper_base` 和夹爪连杆提供 collision STL；该检查用于确认运行时没有误用缺失夹爪或错误版本的模型，仍不会下发运动指令。
+
 ## 推荐安全操作顺序
 
 1. 清空机械臂工作区并确认急停/手动断电方式可用。

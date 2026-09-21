@@ -91,6 +91,7 @@ def generate_launch_description():
         # joint, TF and Planning Scene inputs. It publishes no arm command.
         Node(package='brain_robot_pick_place', executable='active_scan_supervisor',
              name='active_scan_supervisor', output='screen', parameters=[
+                 moveit.to_dict(),
                  os.path.join(cube_share, 'config', 'cube_task_real.yaml'),
                  {'use_sim_time': False}]),
     ])
