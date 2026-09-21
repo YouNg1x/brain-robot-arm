@@ -87,4 +87,10 @@ def generate_launch_description():
                  os.path.join(cube_share, 'config', 'cube_task_real.yaml'),
                  {'use_sim_time': False}],
              remappings=[('/joint_states', '/piper_moveit_joint_states')]),
+        # This node only reports whether the current session has fresh RGB-D,
+        # joint, TF and Planning Scene inputs. It publishes no arm command.
+        Node(package='brain_robot_pick_place', executable='active_scan_supervisor',
+             name='active_scan_supervisor', output='screen', parameters=[
+                 os.path.join(cube_share, 'config', 'cube_task_real.yaml'),
+                 {'use_sim_time': False}]),
     ])

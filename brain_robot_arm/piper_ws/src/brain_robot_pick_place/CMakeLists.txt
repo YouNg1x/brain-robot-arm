@@ -96,13 +96,23 @@ ament_target_dependencies(grasp_lift_executor
   tf2_ros
 )
 
+add_executable(active_scan_supervisor src/active_scan_supervisor.cpp)
+ament_target_dependencies(active_scan_supervisor
+  moveit_msgs
+  rclcpp
+  sensor_msgs
+  std_msgs
+  tf2
+  tf2_ros
+)
+
 install(TARGETS cup_pose_plugin
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
 
-install(TARGETS pick_place_node cup_detector_node visual_search_controller grasp_lift_executor
+install(TARGETS pick_place_node cup_detector_node visual_search_controller grasp_lift_executor active_scan_supervisor
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -65,6 +65,10 @@ class RuntimeMonitor(Node):
                                  lambda message: self.store('filtered_points', message), sensor_qos)
         self.create_subscription(PlanningScene, '/monitored_planning_scene',
                                  self.store_planning_scene, reliable_qos)
+        self.create_subscription(String, '/brain_robot_active_scan/state',
+                                 lambda message: self.store('active_scan_state', message.data), state_qos)
+        self.create_subscription(String, '/brain_robot_active_scan/diagnostic',
+                                 lambda message: self.store('active_scan_diagnostic', message.data), state_qos)
         self.create_subscription(JointState, '/joint_states',
                                  lambda message: self.store('joint_states', message), sensor_qos)
         self.create_subscription(JointState, '/joint_states_feedback',
@@ -155,6 +159,10 @@ class RuntimeMonitor(Node):
         print(f'  相机 TF: {self.camera_tf_status()}')
         print(f'  MoveIt 场景: {self.value("planning_scene")}  '
               f'({self.age("planning_scene")})')
+        print(f'  扫描前提: {self.value("active_scan_state")}  '
+              f'({self.age("active_scan_state")})')
+        print(f'  扫描诊断: {self.value("active_scan_diagnostic")}  '
+              f'({self.age("active_scan_diagnostic")})')
         error = self.values.get('pixel_error')
         if error is None:
             print('像素误差: --')

@@ -122,3 +122,14 @@ grasp_lift_executor:
     trajectory_feedback_timeout_s: 12.0
     grasp_reacquire_topic: /brain_robot_grasp/reacquire
     emergency_stop_topic: /brain_robot_control/emergency_stop
+
+active_scan_supervisor:
+  ros__parameters:
+    point_cloud_topic: /camera/depth/points
+    joint_state_topic: /piper_moveit_joint_states
+    planning_scene_topic: /monitored_planning_scene
+    reference_frame: base_link
+    camera_optical_frame: camera_color_optical_frame
+    map_timeout_s: 1.0
+    joint_state_timeout_s: 0.30
+    initial_observe_stable_frames: 3

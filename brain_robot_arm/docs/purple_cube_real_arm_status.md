@@ -25,7 +25,8 @@ B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2
 
 - 已确认并提交设计：不把实验桌、电脑或支架写成永久碰撞物；每次启动使用腕部 Astra 点云建立仅属于本 ROS 会话的临时环境地图。设计与实施计划分别位于 `docs/superpowers/specs/2026-09-21-wrist-camera-unknown-space-safe-active-scan-design.md` 与 `docs/superpowers/plans/2026-09-21-wrist-camera-unknown-space-safe-active-scan-implementation.md`。
 - F0 已完成源码修改，且不改变机械臂运动：`runtime_monitor.py` 现在只读显示 `/camera/depth/points`、`/brain_robot_vision/filtered_points`、`base_link <- camera_color_optical_frame` TF 与 `/monitored_planning_scene` 的最新消息。它只能证明输入链路有无更新，不能代替 Ubuntu/RViz 对 OctoMap 环境几何和机器人自过滤的验收。
-- 后续 F1--F4 才会实现会话地图状态门、未知空间走廊验证、有限观察姿态和抓取微步接入。设计要求：未知空间不得视为自由空间；没有可认证的观察路径时机械臂保持原位而不盲扫。
+- F1 已完成源码修改，且仍不发布机械臂命令：新节点 `active_scan_supervisor` 只持续报告点云、PiPER 关节反馈、相机 TF 和 Planning Scene 是否具备初始会话地图输入。它发布 `/brain_robot_active_scan/state` 与 `/brain_robot_active_scan/diagnostic`；`MAP_INPUT_READY` 只表示输入已新鲜，不表示整张 OctoMap 或任意运动走廊已经安全。
+- 后续 F2--F4 才会实现未知空间走廊验证、有限观察姿态和抓取微步接入。设计要求：未知空间不得视为自由空间；没有可认证的观察路径时机械臂保持原位而不盲扫。
 
 ## D 阶段：闭环微步抓取
 
