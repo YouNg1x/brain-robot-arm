@@ -3,11 +3,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <future>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -16,6 +19,7 @@
 
 #include <builtin_interfaces/msg/duration.hpp>
 #include <control_msgs/msg/joint_jog.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <rclcpp/rclcpp.hpp>
@@ -25,6 +29,9 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 namespace brain_robot_pick_place
 {
@@ -94,6 +101,8 @@ public:
   : Node("visual_search_controller", options)
   {
     LoadParameters();
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
     CreateRosInterfaces();
     ValidateParameters();
     PublishStateLocked("WAITING_FOR_START");
@@ -123,6 +132,17 @@ public:
   }
 
 private:
+  struct TargetHistorySample
+  {
+    geometry_msgs::msg::PointStamped camera_point;
+    geometry_msgs::msg::PointStamped reference_point;
+    std::unordered_map<std::string, double> joint_positions;
+    double error_x_px{0.0};
+    double error_y_px{0.0};
+    double error_ratio{1.0};
+    SteadyTime received_time{};
+  };
+
   template<typename T>
   T ParameterOr(const std::string & name, const T & fallback)
   {
@@ -231,6 +251,13 @@ private:
       "error_topic", "/brain_robot_vision/pixel_error");
     target_valid_topic_ = ParameterOr<std::string>(
       "target_valid_topic", "/brain_robot_vision/target_valid");
+    target_point_topic_ = ParameterOr<std::string>(
+      "target_point_topic", "/brain_robot_vision/target_point_camera");
+    target_history_reference_frame_ = ParameterOr<std::string>(
+      "target_history_reference_frame", "base_link");
+    target_history_topic_ = ParameterOr<std::string>(
+      "target_history_topic", "/brain_robot_visual_control/target_history");
+    target_history_window_s_ = ParameterOr<double>("target_history_window_s", 0.40);
     candidate_error_topic_ = ParameterOr<std::string>(
       "candidate_error_topic", "/brain_robot_vision/color_candidate_error");
     candidate_valid_topic_ = ParameterOr<std::string>(
@@ -277,16 +304,31 @@ private:
     target_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
       target_valid_topic_, sensor_qos,
       [this](const std_msgs::msg::Bool::SharedPtr message) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        target_valid_ = message->data;
-        if (target_valid_) {
-          candidate_only_alignment_ = false;
-          ++target_valid_frames_;
-          last_target_valid_time_ = SteadyClock::now();
-        } else {
-          target_valid_frames_ = 0;
-          aligned_frames_ = 0;
+        bool record_history = false;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          target_valid_ = message->data;
+          if (target_valid_) {
+            candidate_only_alignment_ = false;
+            ++target_valid_frames_;
+            last_target_valid_time_ = SteadyClock::now();
+            record_history = Fresh(target_point_received_time_, target_timeout_s_) &&
+              Fresh(error_received_time_, target_timeout_s_);
+          } else {
+            target_valid_frames_ = 0;
+            aligned_frames_ = 0;
+          }
         }
+        if (record_history) {
+          RecordTargetHistorySample();
+        }
+      });
+    target_point_subscription_ = create_subscription<geometry_msgs::msg::PointStamped>(
+      target_point_topic_, sensor_qos,
+      [this](const geometry_msgs::msg::PointStamped::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        target_point_camera_ = *message;
+        target_point_received_time_ = SteadyClock::now();
       });
     candidate_error_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
       candidate_error_topic_, sensor_qos,
@@ -369,6 +411,8 @@ private:
       "/brain_robot_visual_control/forward_allowed", rclcpp::QoS(1).transient_local());
     search_direction_publisher_ = create_publisher<std_msgs::msg::String>(
       "/brain_robot_visual_control/search_direction", rclcpp::QoS(1).transient_local());
+    target_history_publisher_ = create_publisher<std_msgs::msg::String>(
+      target_history_topic_, rclcpp::QoS(1).transient_local());
 
     servo_start_client_ = create_client<std_srvs::srv::Trigger>(servo_start_service_);
     servo_stop_client_ = create_client<std_srvs::srv::Trigger>(servo_stop_service_);
@@ -504,10 +548,11 @@ private:
       horizontal_search_speed_ <= 0.0 || vertical_search_speed_ <= 0.0 ||
       prepare_execution_timeout_s_ <= 0.0 ||
       target_acquire_error_ratio_ <= 0.0 || target_acquire_error_ratio_ > 1.0 ||
-      align_stable_frames_ < 1)
+      align_stable_frames_ < 1 || target_history_window_s_ <= 0.0 ||
+      target_history_reference_frame_.empty() || target_history_topic_.empty())
     {
       RCLCPP_ERROR(
-        get_logger(), "Search bounds, speeds, rate or target-acquisition ratio are invalid.");
+        get_logger(), "Search bounds, speeds, target history, rate or target-acquisition ratio are invalid.");
       configuration_ok_ = false;
     }
     if (backend_ != "simulation" && backend_ != "piper") {
@@ -1513,6 +1558,95 @@ private:
     return std::chrono::duration<double>(SteadyClock::now() - time).count() <= timeout_s;
   }
 
+  void RecordTargetHistorySample()
+  {
+    TargetHistorySample sample;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!target_valid_ || !Fresh(target_point_received_time_, target_timeout_s_) ||
+        !Fresh(error_received_time_, target_timeout_s_))
+      {
+        return;
+      }
+      sample.camera_point = target_point_camera_;
+      sample.joint_positions = joint_positions_;
+      sample.error_x_px = error_x_px_;
+      sample.error_y_px = error_y_px_;
+      sample.error_ratio = target_error_ratio_;
+      sample.received_time = SteadyClock::now();
+    }
+
+    if (sample.camera_point.header.frame_id.empty() ||
+      !std::isfinite(sample.camera_point.point.x) ||
+      !std::isfinite(sample.camera_point.point.y) ||
+      !std::isfinite(sample.camera_point.point.z))
+    {
+      return;
+    }
+    try {
+      const auto transform = tf_buffer_->lookupTransform(
+        target_history_reference_frame_, sample.camera_point.header.frame_id,
+        tf2::TimePointZero);
+      tf2::doTransform(sample.camera_point, sample.reference_point, transform);
+    } catch (const tf2::TransformException & exception) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Target history transform to '%s' failed: %s",
+        target_history_reference_frame_.c_str(), exception.what());
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    target_history_.push_back(std::move(sample));
+    while (!target_history_.empty() &&
+      std::chrono::duration<double>(SteadyClock::now() -
+      target_history_.front().received_time).count() > target_history_window_s_)
+    {
+      target_history_.pop_front();
+    }
+    PublishTargetHistoryLocked();
+  }
+
+  void PublishTargetHistoryLocked()
+  {
+    if (!target_history_publisher_ || target_history_.empty()) {
+      return;
+    }
+    const auto & latest = target_history_.back();
+    const double age_s = std::chrono::duration<double>(
+      SteadyClock::now() - latest.received_time).count();
+    double velocity_x = 0.0;
+    double velocity_y = 0.0;
+    double velocity_z = 0.0;
+    if (target_history_.size() >= 2U) {
+      const auto & oldest = target_history_.front();
+      const double elapsed_s = std::chrono::duration<double>(
+        latest.received_time - oldest.received_time).count();
+      if (elapsed_s > 1e-3) {
+        velocity_x = (latest.reference_point.point.x - oldest.reference_point.point.x) / elapsed_s;
+        velocity_y = (latest.reference_point.point.y - oldest.reference_point.point.y) / elapsed_s;
+        velocity_z = (latest.reference_point.point.z - oldest.reference_point.point.z) / elapsed_s;
+      }
+    }
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+           << "samples=" << target_history_.size()
+           << " age_s=" << age_s
+           << " camera_m=(" << latest.camera_point.point.x << ","
+           << latest.camera_point.point.y << "," << latest.camera_point.point.z << ")"
+           << " " << target_history_reference_frame_ << "_m=("
+           << latest.reference_point.point.x << "," << latest.reference_point.point.y << ","
+           << latest.reference_point.point.z << ")"
+           << " velocity_m_s=(" << velocity_x << "," << velocity_y << ","
+           << velocity_z << ")"
+           << " error_px=(" << latest.error_x_px << "," << latest.error_y_px << ")"
+           << " error_ratio=" << latest.error_ratio
+           << " joint_count=" << latest.joint_positions.size();
+    std_msgs::msg::String message;
+    message.data = stream.str();
+    target_history_publisher_->publish(message);
+  }
+
   static bool IsMotionState(ControlState state)
   {
     return state == ControlState::PREPARE || state == ControlState::SEARCH ||
@@ -1643,6 +1777,7 @@ private:
   double last_horizontal_velocity_{0.0};
   double last_vertical_velocity_{0.0};
   double target_timeout_s_{0.60};
+  double target_history_window_s_{0.40};
   double joint_state_timeout_s_{0.50};
   int target_acquire_frames_{3};
   int align_stable_frames_{5};
@@ -1666,6 +1801,9 @@ private:
 
   std::string error_topic_;
   std::string target_valid_topic_;
+  std::string target_point_topic_;
+  std::string target_history_reference_frame_;
+  std::string target_history_topic_;
   std::string candidate_error_topic_;
   std::string candidate_valid_topic_;
   std::string joint_state_topic_;
@@ -1680,6 +1818,7 @@ private:
   SteadyTime joint_state_time_{};
   SteadyTime error_received_time_{};
   SteadyTime last_target_valid_time_{};
+  SteadyTime target_point_received_time_{};
   SteadyTime candidate_error_received_time_{};
   bool target_valid_{false};
   bool candidate_valid_{false};
@@ -1691,6 +1830,8 @@ private:
   double candidate_error_x_px_{0.0};
   double candidate_error_y_px_{0.0};
   double candidate_error_ratio_{1.0};
+  geometry_msgs::msg::PointStamped target_point_camera_;
+  std::deque<TargetHistorySample> target_history_;
   int target_valid_frames_{0};
   int aligned_frames_{0};
   bool servo_status_seen_{false};
@@ -1711,6 +1852,7 @@ private:
 
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr error_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_valid_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr target_point_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr candidate_error_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr candidate_valid_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
@@ -1722,6 +1864,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr reason_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr search_direction_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_history_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr forward_allowed_publisher_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_stop_client_;
@@ -1729,6 +1872,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
   rclcpp::TimerBase::SharedPtr timer_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };
 
 }  // namespace brain_robot_pick_place

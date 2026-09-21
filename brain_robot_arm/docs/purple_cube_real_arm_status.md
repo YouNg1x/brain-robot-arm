@@ -10,6 +10,8 @@
 
 2026-09-21 已完成 A1 的源码修改，尚未在 Ubuntu ROS 2 环境构建或实机验收：`GRASP_READY` 现在属于内部控制定时器的持续监视状态，但仍对外发布原名称，以保持按键 `2` 的抓取授权接口。目标仍在允许误差内时保持 Servo 停止；目标像素误差超过 `target_acquire_error_ratio` 时异步启动 Servo 并进入 `ALIGN`；目标失效时异步启动 Servo 并进入现有 `LAST_PATH_REACQUIRE`。本项没有改变最后路径的固定 J1/J5 偏移；三维目标历史与预测重捕获仍属于 A2/A3。
 
+2026-09-21 已完成 A2 的源码修改，尚未在 Ubuntu ROS 2 环境构建或实机验收：视觉控制器新增订阅 `/brain_robot_vision/target_point_camera`，在 `target_valid=true` 且目标点、像素误差均未过期时，保存最近 0.40 秒的相机三维点、转换到 `base_link` 的三维点、像素误差、对应六轴反馈和单调时间。新增瞬态诊断话题 `/brain_robot_visual_control/target_history`，输出样本数量、最近点年龄、相机/基座位置、窗口速度估计、像素误差和已保存关节数量。当前检测器仅在自身深度检查通过后才发布该三维点；针对反光、黑色表面的深度稳定性质量门仍属于 C1，尚未实现。A3 将消费这段历史替代当前固定 J1/J5 偏移。
+
 ## 当前目标与安全边界
 
 当前目标是用实体 PiPER、Astra/Orbbec RGB-D 相机和 ROS 2：组件启动后按键 `1` 先执行六轴软件零点复位，再移动到观测姿态并搜索紫色正方体（`PURPLE_CUBE`）；检测到后低速居中；进入 `GRASP_READY` 后由按键 `2` 执行抓取。

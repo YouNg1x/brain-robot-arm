@@ -65,6 +65,10 @@ visual_search_controller:
     prepare_execution_timeout_s: 300.0
     error_topic: /brain_robot_vision/pixel_error
     target_valid_topic: /brain_robot_vision/target_valid
+    target_point_topic: /brain_robot_vision/target_point_camera
+    target_history_reference_frame: base_link
+    target_history_topic: /brain_robot_visual_control/target_history
+    target_history_window_s: 0.40
     joint_state_topic: /joint_states
     joint_command_topic: /servo_node/delta_joint_cmds
     servo_status_topic: /servo_node/status
