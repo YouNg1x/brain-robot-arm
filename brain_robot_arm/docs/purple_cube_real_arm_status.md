@@ -21,6 +21,12 @@ B 阶段已将视觉阶段的真实命令收敛为 J1/J5：真机配置关闭 J2
 - 点云配置已指向 `/camera/depth/points`，其自过滤输出为 `/brain_robot_vision/filtered_points`。尚未在实体 RViz 中确认桌面点已进入 Octomap 或机械臂自身被正确滤除；这不是能用静态源码替代的结论。
 - 现阶段不训练模型：固定腕部相机、单一紫色方块、有限光照时，HSV 阈值、时间滤波和深度质量门更直接、可解释且运行成本低。只有出现大量相似紫色干扰、光照跨度大、频繁遮挡或多类别目标时才采集真实 RGB-D 数据训练检测/分割模型；训练也不能修复黑色或镜面材质的深度缺失。
 
+## F 阶段：当前会话主动扫描（进行中）
+
+- 已确认并提交设计：不把实验桌、电脑或支架写成永久碰撞物；每次启动使用腕部 Astra 点云建立仅属于本 ROS 会话的临时环境地图。设计与实施计划分别位于 `docs/superpowers/specs/2026-09-21-wrist-camera-unknown-space-safe-active-scan-design.md` 与 `docs/superpowers/plans/2026-09-21-wrist-camera-unknown-space-safe-active-scan-implementation.md`。
+- F0 已完成源码修改，且不改变机械臂运动：`runtime_monitor.py` 现在只读显示 `/camera/depth/points`、`/brain_robot_vision/filtered_points`、`base_link <- camera_color_optical_frame` TF 与 `/monitored_planning_scene` 的最新消息。它只能证明输入链路有无更新，不能代替 Ubuntu/RViz 对 OctoMap 环境几何和机器人自过滤的验收。
+- 后续 F1--F4 才会实现会话地图状态门、未知空间走廊验证、有限观察姿态和抓取微步接入。设计要求：未知空间不得视为自由空间；没有可认证的观察路径时机械臂保持原位而不盲扫。
+
 ## D 阶段：闭环微步抓取
 
 - 预抓取仍由 MoveIt 规划，但实体执行现在必须等待 `/piper_moveit_joint_states` 到达轨迹终点的各关节目标；计划时长结束本身不再代表执行成功。终点容差为 0.04 rad，最长等待 12 秒，失败即回到视觉重获而不是继续接近。

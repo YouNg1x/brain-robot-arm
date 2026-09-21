@@ -7,10 +7,13 @@ import time
 import rclpy
 from control_msgs.msg import JointJog
 from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
+from moveit_msgs.msg import PlanningScene
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool, Int8, String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class RuntimeMonitor(Node):
@@ -26,6 +29,10 @@ class RuntimeMonitor(Node):
 
         self.values: dict[str, object] = {}
         self.received: dict[str, float] = {}
+        self.camera_optical_frame = self.declare_parameter(
+            'camera_optical_frame', 'camera_color_optical_frame').value
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(String, '/brain_robot_visual_control/state',
                                  lambda message: self.store('visual_state', message.data), state_qos)
         self.create_subscription(String, '/brain_robot_visual_control/reason',
@@ -52,8 +59,12 @@ class RuntimeMonitor(Node):
                                  lambda message: self.store('pixel_error', message.vector), reliable_qos)
         self.create_subscription(PointStamped, '/brain_robot_vision/target_point_camera',
                                  lambda message: self.store('target_point', message), reliable_qos)
+        self.create_subscription(PointCloud2, '/camera/depth/points',
+                                 lambda message: self.store('raw_points', message), sensor_qos)
         self.create_subscription(PointCloud2, '/brain_robot_vision/filtered_points',
                                  lambda message: self.store('filtered_points', message), sensor_qos)
+        self.create_subscription(PlanningScene, '/monitored_planning_scene',
+                                 self.store_planning_scene, reliable_qos)
         self.create_subscription(JointState, '/joint_states',
                                  lambda message: self.store('joint_states', message), sensor_qos)
         self.create_subscription(JointState, '/joint_states_feedback',
@@ -68,6 +79,18 @@ class RuntimeMonitor(Node):
         self.values[key] = value
         self.received[key] = time.monotonic()
 
+    def store_planning_scene(self, message: PlanningScene) -> None:
+        octomap = message.world.octomap.octomap
+        if octomap.id:
+            summary = (
+                f'更新 is_diff={message.is_diff} octomap={octomap.id} '
+                f'resolution={octomap.resolution:.3f} m data={len(octomap.data)} B')
+        elif message.is_diff:
+            summary = '收到场景差分（本消息不含 OctoMap 数据）'
+        else:
+            summary = '收到完整场景（本消息不含 OctoMap 数据）'
+        self.store('planning_scene', summary)
+
     def age(self, key: str) -> str:
         if key not in self.received:
             return '--'
@@ -76,6 +99,17 @@ class RuntimeMonitor(Node):
     def value(self, key: str) -> str:
         value = self.values.get(key)
         return '--' if value is None else str(value)
+
+    def camera_tf_status(self) -> str:
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'base_link', self.camera_optical_frame, Time())
+        except TransformException as exception:
+            return f'不可用：{exception}'
+        translation = transform.transform.translation
+        return (
+            f'可用 base_link <- {self.camera_optical_frame} '
+            f't=({translation.x:.3f}, {translation.y:.3f}, {translation.z:.3f}) m')
 
     @staticmethod
     def stage_hint(state: str) -> str:
@@ -114,8 +148,13 @@ class RuntimeMonitor(Node):
               f'depth_valid={self.value("depth_valid")}')
         print(f'深度抓取门: {self.value("depth_diagnostic")}  '
               f'({self.age("depth_diagnostic")})')
-        print(f'碰撞点云: /brain_robot_vision/filtered_points  '
+        print('环境地图输入:')
+        print(f'  原始点云: /camera/depth/points  ({self.age("raw_points")})')
+        print(f'  自过滤点云: /brain_robot_vision/filtered_points  '
               f'({self.age("filtered_points")})')
+        print(f'  相机 TF: {self.camera_tf_status()}')
+        print(f'  MoveIt 场景: {self.value("planning_scene")}  '
+              f'({self.age("planning_scene")})')
         error = self.values.get('pixel_error')
         if error is None:
             print('像素误差: --')
