@@ -13,6 +13,7 @@ MIN_FREE_MB="${BRAIN_ROBOT_MIN_FREE_MB:-2048}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-45}"
 PIDS=()
 LOG_GUARD_PID=""
+CAMERA_HEALTH_PID=""
 DISABLE_REQUESTED=0
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -30,6 +31,10 @@ cleanup() {
     echo; echo "[保持] 未收到 Ctrl+C；不发送 PiPER 失能命令。"
   fi
   echo "[关闭] 停止本脚本启动的视觉、相机和驱动进程..."
+  if [[ -n "$CAMERA_HEALTH_PID" ]]; then
+    kill "$CAMERA_HEALTH_PID" 2>/dev/null || true
+  fi
+  stop_astra_camera || true
   for pid in "${PIDS[@]:-}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   sleep 1
   for pid in "${PIDS[@]:-}"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
@@ -135,6 +140,83 @@ start_group() {
   setsid "$@" >"$logfile" 2>&1 &
   PIDS+=("$!")
   echo "[后台] ${tag} 日志：${logfile}"
+}
+
+astra_process_exists() {
+  pgrep -f 'ros2 launch astra_camera astra\.launch\.py' >/dev/null 2>&1 ||
+    pgrep -f 'component_container.*__node:=astra_camera_container' >/dev/null 2>&1
+}
+
+stop_astra_camera() {
+  local pid pgid attempt
+  pid=$(pgrep -fo 'ros2 launch astra_camera astra\.launch\.py' 2>/dev/null || true)
+  if [[ -n "$pid" ]]; then
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    # Only signal a process group when Astra was launched in its own session.
+    # Otherwise, terminating the group could also terminate a user shell.
+    if [[ "$pgid" == "$pid" ]]; then
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+    else
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  fi
+  pkill -TERM -f 'component_container.*__node:=astra_camera_container' \
+    2>/dev/null || true
+  for attempt in {1..10}; do
+    astra_process_exists || return 0
+    sleep 1
+  done
+  pkill -KILL -f 'ros2 launch astra_camera astra\.launch\.py' 2>/dev/null || true
+  pkill -KILL -f 'component_container.*__node:=astra_camera_container' \
+    2>/dev/null || true
+}
+
+start_astra_camera() {
+  start_group astra_camera ros2 launch astra_camera astra.launch.py
+}
+
+camera_has_rgb_frame() {
+  # A Publisher can exist before Orbbec SDK has opened the USB device.  A
+  # successful one-shot subscription proves that an actual RGB frame arrived.
+  timeout 4s ros2 topic echo --once /camera/color/image_raw >/dev/null 2>&1
+}
+
+start_camera_health_guard() {
+  local logfile="$LOG_DIR/camera_health.log"
+  : > "$logfile"
+  (
+    local missing_frames=0 restart_backoff_s=3
+    while true; do
+      if camera_has_rgb_frame; then
+        if (( restart_backoff_s > 3 )); then
+          echo "[$(date '+%F %T')] CAMERA_FRAMES_RECOVERED"
+        fi
+        missing_frames=0
+        restart_backoff_s=3
+        sleep 5
+        continue
+      fi
+
+      ((missing_frames += 1))
+      if (( missing_frames < 2 )); then
+        sleep 5
+        continue
+      fi
+
+      echo "[$(date '+%F %T')] CAMERA_NO_FRAMES: restarting Astra after ${restart_backoff_s}s"
+      stop_astra_camera
+      sleep "$restart_backoff_s"
+      start_astra_camera
+      missing_frames=0
+      restart_backoff_s=$((restart_backoff_s * 2))
+      if (( restart_backoff_s > 30 )); then
+        restart_backoff_s=30
+      fi
+      sleep 5
+    done
+  ) >>"$logfile" 2>&1 &
+  CAMERA_HEALTH_PID="$!"
+  echo "[相机] 已启用无帧自动恢复；仅重启 Astra，不影响机械臂控制栈。"
 }
 
 configure_can() {
@@ -346,7 +428,7 @@ wait_for service /enable_srv
 
 echo "[2/7] 检查并启动 RGB-D 相机..."
 if ! node_exists /camera/camera; then
-  start_group astra_camera ros2 launch astra_camera astra.launch.py
+  start_astra_camera
 else
   echo "[复用] 已检测到 /camera/camera"
 fi
@@ -372,6 +454,7 @@ echo "[5/7] 检查完整 MoveIt 反馈..."
 wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
 start_group debug_image_view ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
+start_camera_health_guard
 echo "[7/7] 全部组件已就绪。"
 echo
 echo "操作：按 1 从六轴零点开始搜索/对齐；2=GRASP_READY 后抓取；0=仅零点复位；Ctrl+C=失能并退出。"
