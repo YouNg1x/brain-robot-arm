@@ -71,6 +71,10 @@ def generate_launch_description():
                  'output_topic': '/joint_commands',
                  'emergency_stop_topic': '/brain_robot_control/emergency_stop',
                  'max_velocity_rad_s': 0.189,
+                 # The VM can briefly delay ROS subscription callbacks even
+                 # while the driver is still publishing feedback.  Keep a
+                 # bounded but realistic timeout for the physical adapter.
+                 'joint_state_timeout_s': 2.0,
                  'initial_gripper_position': 0.05,
                  # Expanded real-arm J1 envelope; J1/J5 scan the configured
                  # bounds while J2/J3/J4/J6 retain their existing limits.

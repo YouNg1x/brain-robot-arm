@@ -332,6 +332,7 @@ configure_can
 if ! node_exists /piper_ctrl_single_node; then
   start_group piper_driver ros2 run piper piper_single_ctrl \
     --ros-args \
+    --log-level WARN \
     -p can_port:=can0 \
     -p auto_enable:=false \
     -p gripper_exist:=true \
