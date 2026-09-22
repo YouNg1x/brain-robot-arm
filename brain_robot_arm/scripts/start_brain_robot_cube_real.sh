@@ -181,6 +181,48 @@ restart_stale_camera() {
   start_camera
 }
 
+visual_stack_exists() {
+  local node_list
+  node_list=$(timeout 5s ros2 node list 2>/dev/null || true)
+  grep -Eq '^/(move_group|servo_node|piper_jog_adapter|visual_search_controller)$' \
+    <<<"$node_list"
+}
+
+stop_stale_visual_stack() {
+  if ! visual_stack_exists; then
+    return 0
+  fi
+
+  echo "[清理] 检测到上一轮遗留的 MoveIt/Servo/视觉控制栈，正在停止..."
+  timeout 5s ros2 service call /visual_search_controller/stop \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+  timeout 5s ros2 service call /servo_node/stop_servo \
+    std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+
+  # A terminated ros2 launch normally stops every child. The following
+  # process-specific fallbacks handle a launch parent that was interrupted
+  # before it could forward SIGINT to its children.
+  pkill -TERM -f 'ros2 launch brain_robot_ball_pick cube_visual_search.launch.py' \
+    2>/dev/null || true
+  sleep 2
+  if visual_stack_exists; then
+    pkill -TERM -f '/brain_robot_pick_place/(piper_jog_adapter.py|visual_search_controller|grasp_lift_executor|active_scan_supervisor)' \
+      2>/dev/null || true
+    pkill -TERM -f '/moveit_servo/servo_node_main' 2>/dev/null || true
+    pkill -TERM -f '/moveit_ros_move_group/move_group' 2>/dev/null || true
+  fi
+
+  local deadline=$((SECONDS + 15))
+  while (( SECONDS < deadline )); do
+    if ! visual_stack_exists; then
+      echo "[清理] 旧控制栈已退出。"
+      return 0
+    fi
+    sleep 1
+  done
+  fail "旧 MoveIt/Servo/视觉控制栈未完全退出；拒绝启动第二套控制器。"
+}
+
 topic_exists() {
   timeout 5s ros2 topic list 2>/dev/null | grep -Fxq "$1"
 }
@@ -343,6 +385,7 @@ start_group cube_detector ros2 launch brain_robot_ball_pick cube_detector.launch
 wait_for topic /brain_robot_vision/debug_image
 
 echo "[4/7] 启动 MoveIt、Servo 和真机保护适配器..."
+stop_stale_visual_stack
 start_group visual_stack ros2 launch brain_robot_ball_pick cube_visual_search.launch.py
 wait_for node /move_group
 wait_for node /servo_node
