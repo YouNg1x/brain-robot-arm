@@ -3,9 +3,12 @@
 set -Eeuo pipefail
 
 ROS_SETUP=/opt/ros/humble/setup.bash
-PIPER_WS="${PIPER_ROS_WS:-$HOME/piper_ros}"
-APP_WS="${BRAIN_ROBOT_WS:-$HOME/piper_ws}"
-SIM_SCRIPT="${PIPER_SIM_SCRIPT:-$HOME/start_piper_sim.sh}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BRAIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PIPER_WS="${PIPER_ROS_WS:-$BRAIN_ROOT/vendor/piper_ros}"
+APP_WS="${BRAIN_ROBOT_WS:-$BRAIN_ROOT/piper_ws}"
+SIM_SCRIPT="${PIPER_SIM_SCRIPT:-$BRAIN_ROOT/scripts/start_piper_sim.sh}"
 WAIT_SECONDS="${BRAIN_ROBOT_WAIT_SECONDS:-90}"
 PIDS=()
 
@@ -25,7 +28,7 @@ trap 'exit 143' TERM
 [[ -z "${CONDA_PREFIX:-}" ]] || fail "请先执行 conda deactivate。"
 [[ -f "$ROS_SETUP" && -f "$PIPER_WS/install/setup.bash" && -f "$APP_WS/install/setup.bash" ]] ||
   fail "ROS2、PiPER 或应用工作空间尚未就绪。"
-[[ -x "$SIM_SCRIPT" ]] || fail "未找到 ~/start_piper_sim.sh。"
+[[ -x "$SIM_SCRIPT" ]] || fail "未找到或不可执行：$SIM_SCRIPT"
 set +u
 source "$ROS_SETUP"
 source "$PIPER_WS/install/setup.bash"
