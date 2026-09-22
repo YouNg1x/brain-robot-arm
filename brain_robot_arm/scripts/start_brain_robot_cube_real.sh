@@ -157,15 +157,17 @@ node_exists() {
   timeout 5s ros2 node list 2>/dev/null | grep -Fxq "$1"
 }
 
-visual_stack_exists() {
-  local node_list
-  node_list=$(timeout 5s ros2 node list 2>/dev/null || true)
-  grep -Eq '^/(move_group|servo_node|piper_jog_adapter|visual_search_controller)$' \
-    <<<"$node_list"
+visual_stack_processes_exist() {
+  # Use process identities rather than `ros2 node list`: DDS discovery can
+  # retain nodes from a just-terminated launch for longer than this script's
+  # startup window. Match executable paths, not service-client arguments.
+  pgrep -f \
+    'ros2 launch brain_robot_ball_pick cube_visual_search\.launch\.py|/brain_robot_pick_place/(piper_jog_adapter\.py|visual_search_controller|grasp_lift_executor|active_scan_supervisor)([[:space:]]|$)|/moveit_servo/servo_node_main([[:space:]]|$)|/moveit_ros_move_group/move_group([[:space:]]|$)' \
+    >/dev/null 2>&1
 }
 
 stop_stale_visual_stack() {
-  if ! visual_stack_exists; then
+  if ! visual_stack_processes_exist; then
     return 0
   fi
 
@@ -181,7 +183,7 @@ stop_stale_visual_stack() {
   pkill -TERM -f 'ros2 launch brain_robot_ball_pick cube_visual_search.launch.py' \
     2>/dev/null || true
   sleep 2
-  if visual_stack_exists; then
+  if visual_stack_processes_exist; then
     pkill -TERM -f '/brain_robot_pick_place/(piper_jog_adapter.py|visual_search_controller|grasp_lift_executor|active_scan_supervisor)' \
       2>/dev/null || true
     pkill -TERM -f '/moveit_servo/servo_node_main' 2>/dev/null || true
@@ -190,7 +192,7 @@ stop_stale_visual_stack() {
 
   local deadline=$((SECONDS + 15))
   while (( SECONDS < deadline )); do
-    if ! visual_stack_exists; then
+    if ! visual_stack_processes_exist; then
       echo "[清理] 旧控制栈已退出。"
       return 0
     fi
