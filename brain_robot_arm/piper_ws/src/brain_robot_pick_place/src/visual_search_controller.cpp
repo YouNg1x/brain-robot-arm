@@ -1080,8 +1080,10 @@ private:
         const double duration_s = trajectory.points.empty() ? 0.0 :
           static_cast<double>(trajectory.points.back().time_from_start.sec) +
           static_cast<double>(trajectory.points.back().time_from_start.nanosec) * 1e-9;
-        search_segment_deadline_ = SteadyClock::now() + std::chrono::duration<double>(
-          std::max(search_segment_timeout_s_, duration_s * 2.0 + 1.0));
+        const auto segment_timeout = std::chrono::duration_cast<SteadyClock::duration>(
+          std::chrono::duration<double>(
+            std::max(search_segment_timeout_s_, duration_s * 2.0 + 1.0)));
+        search_segment_deadline_ = SteadyClock::now() + segment_timeout;
         PublishControlDetailLocked("SEARCH_PLAN_ACCEPTED source=" + source);
       } else if (!success && !search_plan_cancel_ && IsSearchState(state_)) {
         search_plan_retry_time_ = SteadyClock::now() + std::chrono::milliseconds(500);
