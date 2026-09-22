@@ -181,6 +181,22 @@ camera_has_rgb_frame() {
   timeout 4s ros2 topic echo --once /camera/color/image_raw >/dev/null 2>&1
 }
 
+wait_for_actual_frame() {
+  local topic="$1" label="$2" next_report=$((SECONDS + 10))
+  echo "[等待] 等待 ${label} 首帧；收到真实图像后才继续启动..."
+  while true; do
+    if timeout 4s ros2 topic echo --once "$topic" >/dev/null 2>&1; then
+      echo "[就绪] 已收到 ${label} 首帧。"
+      return 0
+    fi
+    if (( SECONDS >= next_report )); then
+      echo "[等待] ${label} 尚未收到首帧；相机自动恢复仍在运行。"
+      next_report=$((SECONDS + 10))
+    fi
+    sleep 1
+  done
+}
+
 start_camera_health_guard() {
   local logfile="$LOG_DIR/camera_health.log"
   : > "$logfile"
@@ -434,6 +450,8 @@ else
 fi
 wait_for topic /camera/color/image_raw
 wait_for topic /camera/depth/image_raw
+start_camera_health_guard
+wait_for_actual_frame /camera/color/image_raw "RGB 图像"
 
 echo "[3/7] 启动紫色方块 RGB-D 检测..."
 start_group cube_detector ros2 launch brain_robot_ball_pick cube_detector.launch.py
@@ -454,7 +472,7 @@ echo "[5/7] 检查完整 MoveIt 反馈..."
 wait_for topic /piper_moveit_joint_states
 echo "[6/7] 打开识别窗口..."
 start_group debug_image_view ros2 run image_view image_view --ros-args -r image:=/brain_robot_vision/debug_image
-start_camera_health_guard
+wait_for_actual_frame /brain_robot_vision/debug_image "调试图像"
 echo "[7/7] 全部组件已就绪。"
 echo
 echo "操作：按 1 从六轴零点开始搜索/对齐；2=GRASP_READY 后抓取；0=仅零点复位；Ctrl+C=失能并退出。"
