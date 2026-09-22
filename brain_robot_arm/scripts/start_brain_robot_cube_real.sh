@@ -157,30 +157,6 @@ node_exists() {
   timeout 5s ros2 node list 2>/dev/null | grep -Fxq "$1"
 }
 
-topic_has_message() {
-  local topic_name="$1"
-  timeout 8s ros2 topic echo --once "$topic_name" >/dev/null 2>&1
-}
-
-start_camera() {
-  start_group astra_camera ros2 launch astra_camera astra.launch.py
-  wait_for topic /camera/color/image_raw
-  wait_for topic /camera/depth/image_raw
-}
-
-restart_stale_camera() {
-  echo "[相机] 检测到话题存在但 RGB-D 流已断开，重启 Astra 相机驱动..."
-  # The camera is launched by this project's one-click script as a dedicated
-  # ros2 launch process. Stop that process first so the USB device is not
-  # opened by two camera drivers at once.
-  pkill -TERM -f 'ros2 launch astra_camera astra.launch.py' 2>/dev/null || true
-  sleep 3
-  if node_exists /camera/camera; then
-    fail "旧 Astra 相机节点未退出；请先停止占用相机的终端后重新启动。"
-  fi
-  start_camera
-}
-
 visual_stack_exists() {
   local node_list
   node_list=$(timeout 5s ros2 node list 2>/dev/null || true)
@@ -367,18 +343,12 @@ wait_for service /enable_srv
 
 echo "[2/7] 检查并启动 RGB-D 相机..."
 if ! node_exists /camera/camera; then
-  start_camera
+  start_group astra_camera ros2 launch astra_camera astra.launch.py
 else
   echo "[复用] 已检测到 /camera/camera"
-  if ! topic_has_message /camera/color/image_raw || \
-     ! topic_has_message /camera/depth/image_raw; then
-    restart_stale_camera
-  fi
 fi
-if ! topic_has_message /camera/color/image_raw || \
-   ! topic_has_message /camera/depth/image_raw; then
-  fail "Astra 相机启动后未收到 RGB-D 帧；请重新连接 Orbbec USB 相机后重试。"
-fi
+wait_for topic /camera/color/image_raw
+wait_for topic /camera/depth/image_raw
 
 echo "[3/7] 启动紫色方块 RGB-D 检测..."
 start_group cube_detector ros2 launch brain_robot_ball_pick cube_detector.launch.py
